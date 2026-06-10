@@ -32,7 +32,7 @@ class WhatsAppService:
         print(f"[wa] POST {self.base_url}")
         print(f"[wa] Payload: {json.dumps(payload, indent=2)}")
         try:
-            resp = requests.post(self.base_url, headers=self.headers, json=payload, timeout=30)
+            resp = requests.post(self.base_url, headers=self.headers, json=payload, timeout=10)
             print(f"[wa] Response: {resp.status_code} {resp.text[:500]}")
             if resp.status_code >= 400:
                 print(f"[wa] ERROR: {resp.status_code} {resp.text}")

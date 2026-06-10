@@ -75,6 +75,13 @@ RATING_DISPLAY = {
     "not_ok": "Not Acceptable",
 }
 
+# Known rating IDs — if input matches one of these, it's a rating selection, NOT free text
+RATING_IDS = frozenset({
+    "very_good", "good", "satisfactory", "not_ok",
+    "ts_very_good", "ts_good", "ts_satisfactory", "ts_not_ok",
+    "add_comment", "skip_comment",
+})
+
 
 def handle(user: str, input_text: str, wa: WhatsAppService):
     """
@@ -100,6 +107,10 @@ def handle(user: str, input_text: str, wa: WhatsAppService):
 
 def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
     """Internal handler — runs under per-phone lock."""
+
+    # ── CRITICAL: Recover from worker restart ──
+    # If in-memory caches are empty, try reloading from disk
+    store.reload_if_empty()
 
     state = store.get_state(user)
     survey_date = state.get("surveyDate", "") if state else ""
@@ -135,18 +146,33 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
         return
 
     # ══════════════════════════════════════════════════════════════════════
-    #  SAFETY NET: If user sends text and has a partial not_ok entry
-    #  (state was lost due to restart etc.), treat text as complaint.
-    #  This is the fallback that catches the bug where WAITING_COMMENT
-    #  state isn't found.
+    #  SAFETY NET: State was lost but DB has partial not_ok entry.
+    #  This catches the case where:
+    #  1. User selected "Not Acceptable" → partial entry saved in DB
+    #  2. Worker crashed/restarted → in-memory state wiped
+    #  3. User types complaint text → no WAITING_COMMENT state found
+    #  We recover by checking the database for incomplete entries.
     # ══════════════════════════════════════════════════════════════════════
-    if survey_date:
-        incomplete = store.has_incomplete_not_ok(user, survey_date)
-        if incomplete and input_text not in ("very_good", "good", "satisfactory", "not_ok", "ts_not_ok", "ts_very_good", "ts_good", "ts_satisfactory"):
-            print(f"[conversation] >>> SAFETY NET: Found incomplete not_ok for {user} on {survey_date}. Text='{input_text}' treated as complaint.")
-            # Re-set the state and finalize
-            _finalize_not_acceptable(user, survey_date, input_text, "free_text", wa)
-            return
+    if input_text not in RATING_IDS:
+        # Check with survey date if we have it
+        if survey_date:
+            incomplete = store.has_incomplete_not_ok(user, survey_date)
+            if incomplete:
+                print(f"[conversation] >>> SAFETY NET (with date): Found incomplete not_ok for {user} on {survey_date}. Text='{input_text}' treated as complaint.")
+                _finalize_not_acceptable(user, survey_date, input_text, "free_text", wa)
+                return
+
+        # Check without date (state was completely lost)
+        any_incomplete = store.has_any_incomplete_not_ok(user)
+        if any_incomplete:
+            found_date = any_incomplete.get("surveyDate", "")
+            found_meal = any_incomplete.get("mealName", "")
+            if found_date:
+                print(f"[conversation] >>> SAFETY NET (no state, DB recovery): Found incomplete not_ok for {user} on {found_date}. Text='{input_text}' treated as complaint.")
+                # Restore state first so finalize works correctly
+                store.set_state(user, "WAITING_COMMENT", found_meal, found_date)
+                _finalize_not_acceptable(user, found_date, input_text, "free_text", wa)
+                return
 
     # ══════════════════════════════════════════════════════════════════════
     #  DATE-BASED DUPLICATE CHECK
@@ -203,15 +229,18 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
         wa.send_text(user, "Thank you for your feedback!")
         return
 
-    # Unrecognised input — but check if there's a survey date without feedback
-    # (user might be responding to an old survey where state was lost)
-    if not survey_date:
-        # Try to find a survey date from existing incomplete not_ok entries
-        latest = store.get_latest_by_phone(user)
-        if latest and latest.get("rating") == "not_ok" and latest.get("comment") is None:
-            found_date = latest.get("surveyDate", "")
+    # ══════════════════════════════════════════════════════════════════════
+    #  LAST RESORT: Unrecognised input — check DB for any incomplete entry
+    #  (This catches cases where ALL state was lost after worker restart)
+    # ══════════════════════════════════════════════════════════════════════
+    if input_text not in RATING_IDS:
+        any_incomplete = store.has_any_incomplete_not_ok(user)
+        if any_incomplete:
+            found_date = any_incomplete.get("surveyDate", "")
+            found_meal = any_incomplete.get("mealName", "")
             if found_date:
-                print(f"[conversation] >>> LOST STATE RECOVERY: Found incomplete not_ok for {user} on {found_date}. Treating text as complaint.")
+                print(f"[conversation] >>> LAST RESORT DB RECOVERY: Found incomplete not_ok for {user} on {found_date}. Treating '{input_text}' as complaint.")
+                store.set_state(user, "WAITING_COMMENT", found_meal, found_date)
                 _finalize_not_acceptable(user, found_date, input_text, "free_text", wa)
                 return
 

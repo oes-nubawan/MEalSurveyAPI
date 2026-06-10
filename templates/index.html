@@ -7,7 +7,7 @@
   <style>
     * { box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f0f2f5; color: #1e293b; }
-    .container { max-width: 1000px; margin: 0 auto; }
+    .container { max-width: 1100px; margin: 0 auto; }
     .card { background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 1px 6px rgba(0,0,0,0.06); margin-bottom: 20px; }
     h1 { margin: 0 0 4px; font-size: 1.5rem; }
     h2 { margin: 0 0 16px; font-size: 1.15rem; color: #334155; }
@@ -37,11 +37,15 @@
     th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #f3f4f6; }
     th { background: #f9fafb; font-weight: 700; color: #475569; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
     tr:hover td { background: #f9fafb; }
+    tr.row-updated td { background: #fef9c3; transition: background 0.5s; }
     .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
     .badge-very_good { background: #dcfce7; color: #166534; }
     .badge-good { background: #dbeafe; color: #1e40af; }
     .badge-satisfactory { background: #fef9c3; color: #854d0e; }
     .badge-not_ok { background: #fee2e2; color: #991b1b; }
+    .badge-sent { background: #e0e7ff; color: #3730a3; }
+    .badge-waiting { background: #fef9c3; color: #854d0e; }
+    .badge-done { background: #dcfce7; color: #166534; }
     .empty { text-align: center; padding: 32px; color: #94a3b8; font-size: 0.9rem; }
     .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
     .auto-refresh { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #64748b; }
@@ -52,7 +56,22 @@
     .send-results .ok { color: #16a34a; }
     .send-results .fail { color: #dc2626; }
     .phone-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-    .phone-tag { background: #e0e7ff; color: #3730a3; padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 500; }
+    .phone-tag { background: #e0e7ff; color: #3730a3; padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
+    .phone-tag .remove { cursor: pointer; color: #6366f1; font-weight: bold; }
+    .phone-tag .remove:hover { color: #dc2626; }
+    .tab-row { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid #e5e7eb; }
+    .tab { padding: 8px 16px; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: #64748b; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.15s; }
+    .tab:hover { color: #2563eb; }
+    .tab.active { color: #2563eb; border-bottom-color: #2563eb; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .survey-history-item { padding: 12px 0; border-bottom: 1px solid #f3f4f6; }
+    .survey-history-item:last-child { border-bottom: none; }
+    .survey-meta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+    .survey-meta strong { font-size: 0.95rem; }
+    .survey-phones { font-size: 0.8rem; color: #64748b; }
+    .survey-stats { display: flex; gap: 12px; font-size: 0.8rem; margin-top: 4px; }
+    .stat-item { display: flex; align-items: center; gap: 3px; }
     @media (max-width: 640px) {
       .row { flex-direction: column; gap: 0; }
       body { padding: 12px; }
@@ -87,9 +106,13 @@
       </div>
 
       <div class="field">
-        <label for="phones">Phone Numbers</label>
-        <textarea id="phones" placeholder="923001234567, 923009876543&#10;or one per line"></textarea>
-        <div class="hint">Comma-separated or one per line. Include country code, no + or spaces.</div>
+        <label for="phoneInput">Phone Numbers</label>
+        <div style="display:flex;gap:8px;">
+          <input id="phoneInput" type="text" placeholder="923001234567" style="flex:1;" />
+          <button id="addPhoneBtn" class="btn-secondary btn-sm" type="button">Add</button>
+        </div>
+        <div class="hint">Enter a phone number and click Add, or press Enter. Include country code, no + or spaces.</div>
+        <div id="phoneTags" class="phone-tags"></div>
       </div>
 
       <div class="row">
@@ -108,33 +131,48 @@
       <div id="sendStatus"></div>
     </div>
 
-    <!-- Responses -->
+    <!-- Responses & Surveys Tabs -->
     <div class="card">
-      <h2>Responses</h2>
+      <div class="tab-row">
+        <div class="tab active" data-tab="responses">Responses</div>
+        <div class="tab" data-tab="surveys">Survey History</div>
+      </div>
 
-      <div class="actions">
-        <button class="btn-secondary btn-sm" id="refreshButton">Refresh</button>
-        <span id="feedbackCount" style="color:#94a3b8;font-size:0.82rem;"></span>
-        <div class="auto-refresh">
-          <input type="checkbox" id="autoRefresh" checked />
-          <label for="autoRefresh" style="margin:0;font-weight:normal;">Auto-refresh</label>
+      <!-- Responses Tab -->
+      <div id="tab-responses" class="tab-content active">
+        <div class="actions">
+          <button class="btn-secondary btn-sm" id="refreshButton">Refresh</button>
+          <span id="feedbackCount" style="color:#94a3b8;font-size:0.82rem;"></span>
+          <div class="auto-refresh">
+            <input type="checkbox" id="autoRefresh" checked />
+            <label for="autoRefresh" style="margin:0;font-weight:normal;">Auto-refresh (3s)</label>
+          </div>
         </div>
+
+        <div class="reset-row">
+          <input id="resetPhone" type="text" placeholder="Phone to reset (testing)" />
+          <button class="btn-danger btn-sm" id="resetButton">Reset</button>
+        </div>
+
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr><th>#</th><th>Phone</th><th>Meal</th><th>Date</th><th>Rating</th><th>Comment</th><th>Status</th><th>Time</th></tr>
+            </thead>
+            <tbody id="responsesBody"></tbody>
+          </table>
+        </div>
+        <div id="emptyState" class="empty" style="display:none;">No feedback yet. Send a survey to get started.</div>
       </div>
 
-      <div class="reset-row">
-        <input id="resetPhone" type="text" placeholder="Phone to reset (testing)" />
-        <button class="btn-danger btn-sm" id="resetButton">Reset</button>
+      <!-- Surveys Tab -->
+      <div id="tab-surveys" class="tab-content">
+        <div class="actions">
+          <button class="btn-secondary btn-sm" id="refreshSurveys">Refresh</button>
+        </div>
+        <div id="surveysContent"></div>
+        <div id="emptySurveys" class="empty" style="display:none;">No surveys sent yet.</div>
       </div>
-
-      <div style="overflow-x:auto;">
-        <table>
-          <thead>
-            <tr><th>#</th><th>Phone</th><th>Meal</th><th>Date</th><th>Rating</th><th>Comment</th><th>Time</th></tr>
-          </thead>
-          <tbody id="responsesBody"></tbody>
-        </table>
-      </div>
-      <div id="emptyState" class="empty" style="display:none;">No feedback yet. Send a survey to get started.</div>
     </div>
 
     <!-- Debug -->
@@ -151,11 +189,57 @@
   </div>
 
   <script>
+    // ── Phone List Management ────────────────────────────────────────
+    var phoneList = [];
+
+    function renderPhoneTags() {
+      var container = document.getElementById('phoneTags');
+      if (phoneList.length === 0) {
+        container.innerHTML = '';
+        return;
+      }
+      var html = '';
+      phoneList.forEach(function(p, i) {
+        html += '<span class="phone-tag">' + esc(p) + ' <span class="remove" data-index="' + i + '">&times;</span></span>';
+      });
+      container.innerHTML = html;
+
+      // Attach remove handlers
+      container.querySelectorAll('.remove').forEach(function(el) {
+        el.addEventListener('click', function() {
+          phoneList.splice(parseInt(this.dataset.index), 1);
+          renderPhoneTags();
+        });
+      });
+    }
+
+    function addPhone() {
+      var input = document.getElementById('phoneInput');
+      var raw = input.value.trim().replace(/[^0-9]/g, '');
+      if (!raw) return;
+      // Split by comma or newline in case user pastes multiple
+      var nums = raw.split(/[,\n]+/).map(function(p) { return p.trim().replace(/[^0-9]/g, ''); }).filter(Boolean);
+      nums.forEach(function(n) {
+        if (n && phoneList.indexOf(n) === -1) {
+          phoneList.push(n);
+        }
+      });
+      input.value = '';
+      renderPhoneTags();
+      input.focus();
+    }
+
+    document.getElementById('addPhoneBtn').addEventListener('click', addPhone);
+    document.getElementById('phoneInput').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); addPhone(); }
+    });
+
     // ── Elements ────────────────────────────────────────────────────
     var sendStatus = document.getElementById('sendStatus');
     var responsesBody = document.getElementById('responsesBody');
     var emptyState = document.getElementById('emptyState');
     var feedbackCount = document.getElementById('feedbackCount');
+    var previousData = null; // For detecting row updates
 
     // Set default date to today
     var today = new Date();
@@ -164,20 +248,26 @@
     var dd = String(today.getUTCDate()).padStart(2, '0');
     document.getElementById('surveyDate').value = yyyy + '-' + mm + '-' + dd;
 
+    // ── Tabs ────────────────────────────────────────────────────────
+    document.querySelectorAll('.tab').forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+        document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
+        this.classList.add('active');
+        document.getElementById('tab-' + this.dataset.tab).classList.add('active');
+        if (this.dataset.tab === 'surveys') loadSurveys();
+      });
+    });
+
     // ── Send Survey ─────────────────────────────────────────────────
     document.getElementById('sendButton').addEventListener('click', async function() {
       var mealName = document.getElementById('mealName').value.trim();
       var surveyDate = document.getElementById('surveyDate').value;
-      var phones = document.getElementById('phones').value.trim();
       var surveyType = document.getElementById('surveyType').value;
 
-      if (!phones) { showStatus('err', 'Enter at least one phone number.'); return; }
+      if (phoneList.length === 0) { showStatus('err', 'Add at least one phone number.'); return; }
       if (!mealName) { showStatus('err', 'Enter a meal name.'); return; }
       if (!surveyDate) { showStatus('err', 'Select a survey date.'); return; }
-
-      // Parse phones: split by comma, newline, or both
-      var phoneList = phones.split(/[,\n]+/).map(function(p) { return p.trim().replace(/[^0-9]/g, ''); }).filter(Boolean);
-      if (phoneList.length === 0) { showStatus('err', 'No valid phone numbers found.'); return; }
 
       var btn = this;
       btn.disabled = true;
@@ -203,11 +293,16 @@
         }
 
         var html = '<div class="send-results">';
-        html += '<strong>' + data.mealName + '</strong> — ' + data.surveyDate + '<br>';
-        (data.sent || []).forEach(function(s) { html += '<span class="ok">✓ ' + s.phone + '</span><br>'; });
-        (data.errors || []).forEach(function(e) { html += '<span class="fail">✗ ' + e.phone + ': ' + e.error + '</span><br>'; });
+        html += '<strong>' + esc(data.mealName) + '</strong> — ' + esc(data.surveyDate) + '<br>';
+        html += '<span style="color:#64748b;font-size:0.82rem;">Survey type: ' + esc(data.surveyType) + '</span><br>';
+        (data.sent || []).forEach(function(s) { html += '<span class="ok">✓ ' + esc(s.phone) + '</span><br>'; });
+        (data.errors || []).forEach(function(e) { html += '<span class="fail">✗ ' + esc(e.phone) + ': ' + esc(e.error) + '</span><br>'; });
         html += '</div>';
         showStatus('ok', html);
+
+        // Clear phone list on success
+        phoneList = [];
+        renderPhoneTags();
 
         loadResponses();
       } catch (err) {
@@ -224,6 +319,7 @@
 
     // ── Refresh ─────────────────────────────────────────────────────
     document.getElementById('refreshButton').addEventListener('click', loadResponses);
+    document.getElementById('refreshSurveys').addEventListener('click', loadSurveys);
 
     // ── Reset ───────────────────────────────────────────────────────
     document.getElementById('resetButton').addEventListener('click', async function() {
@@ -248,26 +344,68 @@
         if (data.length === 0) {
           responsesBody.innerHTML = '';
           emptyState.style.display = 'block';
+          previousData = null;
           return;
         }
 
         emptyState.style.display = 'none';
         var html = '';
+        var updatedRows = new Set();
+
         for (var i = 0; i < data.length; i++) {
           var item = data[i];
-          html += '<tr>' +
+          var rowKey = item.phone + '::' + item.surveyDate;
+
+          // Detect updated rows (new data differs from previous)
+          var isUpdated = false;
+          if (previousData) {
+            var prev = previousData[rowKey];
+            if (prev && (prev.comment !== item.comment || prev.rating !== item.rating)) {
+              isUpdated = true;
+            }
+          }
+
+          var statusBadge = getStatusBadge(item);
+          var updateClass = isUpdated ? ' class="row-updated"' : '';
+
+          html += '<tr' + updateClass + '>' +
             '<td>' + (item.id || (i+1)) + '</td>' +
             '<td>' + esc(item.phone || '') + '</td>' +
             '<td>' + esc(item.mealName || '') + '</td>' +
             '<td>' + esc(item.surveyDate || '-') + '</td>' +
             '<td><span class="badge badge-' + (item.rating || '') + '">' + fmtRating(item.rating) + '</span></td>' +
             '<td>' + esc(item.comment || '-') + '</td>' +
+            '<td>' + statusBadge + '</td>' +
             '<td>' + fmtDate(item.createdAt) + '</td>' +
           '</tr>';
         }
         responsesBody.innerHTML = html;
+
+        // Store current data for next comparison
+        var newDataMap = {};
+        data.forEach(function(item) {
+          newDataMap[item.phone + '::' + item.surveyDate] = {
+            rating: item.rating,
+            comment: item.comment
+          };
+        });
+        previousData = newDataMap;
         lastCount = data.length;
+
+        // Remove highlight after 2 seconds
+        setTimeout(function() {
+          document.querySelectorAll('.row-updated').forEach(function(row) {
+            row.classList.remove('row-updated');
+          });
+        }, 2000);
+
       } catch (err) { console.error(err); }
+    }
+
+    function getStatusBadge(item) {
+      if (!item.rating) return '<span class="badge badge-sent">Sent</span>';
+      if (item.rating === 'not_ok' && !item.comment) return '<span class="badge badge-waiting">Waiting</span>';
+      return '<span class="badge badge-done">Done</span>';
     }
 
     function fmtRating(r) {
@@ -280,6 +418,45 @@
     }
     function esc(v) {
       return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // ── Load Surveys ────────────────────────────────────────────────
+    async function loadSurveys() {
+      try {
+        var response = await fetch('/api/ui/surveys');
+        if (!response.ok) return;
+        var data = await response.json();
+        var container = document.getElementById('surveysContent');
+        var emptyEl = document.getElementById('emptySurveys');
+
+        if (!data || data.length === 0) {
+          container.innerHTML = '';
+          emptyEl.style.display = 'block';
+          return;
+        }
+
+        emptyEl.style.display = 'none';
+        var html = '';
+        data.forEach(function(s) {
+          var phoneStr = (s.phones || []).join(', ');
+          html += '<div class="survey-history-item">';
+          html += '<div class="survey-meta">';
+          html += '<strong>' + esc(s.mealName || 'Unknown') + '</strong>';
+          html += '<span class="badge badge-sent">' + esc(s.surveyType || 'list') + '</span>';
+          html += '<span style="color:#64748b;font-size:0.82rem;">' + esc(s.surveyDate || '') + '</span>';
+          html += '</div>';
+          html += '<div class="survey-phones">To: ' + esc(phoneStr || 'N/A') + '</div>';
+          html += '<div class="survey-stats">';
+          html += '<span class="stat-item" style="color:#16a34a;">✓ Sent: ' + (s.sentCount || 0) + '</span>';
+          if (s.errorCount > 0) {
+            html += '<span class="stat-item" style="color:#dc2626;">✗ Failed: ' + s.errorCount + '</span>';
+          }
+          html += '<span class="stat-item" style="color:#64748b;">' + fmtDate(s.createdAt) + '</span>';
+          html += '</div>';
+          html += '</div>';
+        });
+        container.innerHTML = html;
+      } catch (err) { console.error(err); }
     }
 
     // ── Auto-refresh ────────────────────────────────────────────────
