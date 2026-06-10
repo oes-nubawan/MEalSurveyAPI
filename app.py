@@ -8,6 +8,7 @@ Key features:
 4. Send surveys only to users who availed the meal (tbl_mealavail per-date status)
 5. All data in Supabase (no JSON files, no in-memory state loss)
 6. User management from UI
+7. Auto-scheduler sends surveys daily at 2:30 PM Pakistan time (Asia/Karachi)
 
 Environment variables:
 - WHATSAPP_TOKEN
@@ -15,6 +16,7 @@ Environment variables:
 - WHATSAPP_VERIFY_TOKEN
 - SUPABASE_URL
 - SUPABASE_SERVICE_KEY
+- AUTO_SURVEY_ENABLED (optional, "true"/"false", default "true")
 """
 
 import os
@@ -23,6 +25,9 @@ from flask import Flask, request, jsonify, render_template
 from store import store as db
 from whatsapp_service import WhatsAppService
 from conversation import process_webhook
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 app = Flask(__name__)
 
@@ -31,6 +36,11 @@ wa = WhatsAppService()
 
 _recent_webhooks = []
 MAX_WEBHOOK_LOG = 20
+
+# ── Auto-scheduler state ──────────────────────────────────────────────
+_auto_send_log = []       # Recent auto-send results for UI display
+MAX_AUTO_LOG = 50
+_auto_enabled = os.environ.get("AUTO_SURVEY_ENABLED", "true").lower() == "true"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -363,7 +373,209 @@ def get_debug_state():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Auto-Scheduler ─────────────────────────────────────────────────────
+
+
+def _auto_send_survey():
+    """Scheduled job: send survey to users who availed today's meal.
+
+    Runs daily at 2:30 PM Pakistan time (Asia/Karachi).
+    - If no meal registered for today → holiday, skip silently.
+    - If meal exists → send survey to all users with availstatus=true.
+    """
+    if not _auto_enabled:
+        print("[scheduler] Auto-survey is DISABLED. Skipping.")
+        return
+
+    # Today's date in Pakistan timezone
+    pkt = pytz.timezone("Asia/Karachi")
+    today_pkt = datetime.now(pkt).strftime("%Y-%m-%d")
+    now_str = datetime.now(pkt).strftime("%Y-%m-%d %H:%M:%S")
+
+    print(f"[scheduler] === Auto-send triggered at {now_str} PKT for date {today_pkt} ===")
+
+    # Check if meal exists for today
+    meal_entry = db.get_meal_by_date(today_pkt)
+    if not meal_entry:
+        log_entry = {
+            "timestamp": now_str,
+            "date": today_pkt,
+            "status": "skipped",
+            "reason": "holiday",
+            "message": f"No meal registered for {today_pkt} — holiday. No survey sent.",
+            "sent": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+        _auto_send_log.append(log_entry)
+        if len(_auto_send_log) > MAX_AUTO_LOG:
+            _auto_send_log.pop(0)
+        print(f"[scheduler] Holiday — no meal for {today_pkt}. Skipping.")
+        return
+
+    meal_name = meal_entry.get("meal_name", "")
+    if not meal_name:
+        log_entry = {
+            "timestamp": now_str,
+            "date": today_pkt,
+            "status": "error",
+            "reason": "meal_name_empty",
+            "message": f"Meal entry exists for {today_pkt} but name is empty.",
+            "sent": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+        _auto_send_log.append(log_entry)
+        if len(_auto_send_log) > MAX_AUTO_LOG:
+            _auto_send_log.pop(0)
+        print(f"[scheduler] Meal entry exists but name is empty for {today_pkt}. Skipping.")
+        return
+
+    print(f"[scheduler] Today's meal: {meal_name}")
+
+    # Get users who availed the meal today
+    available_users = db.get_available_users_for_date(today_pkt)
+    if not available_users:
+        log_entry = {
+            "timestamp": now_str,
+            "date": today_pkt,
+            "status": "skipped",
+            "reason": "no_availed_users",
+            "message": f"No users availed the meal for {today_pkt}.",
+            "mealName": meal_name,
+            "sent": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+        _auto_send_log.append(log_entry)
+        if len(_auto_send_log) > MAX_AUTO_LOG:
+            _auto_send_log.pop(0)
+        print(f"[scheduler] No availed users for {today_pkt}. Skipping.")
+        return
+
+    # Create meal entry (idempotent)
+    try:
+        db.add_meal(today_pkt, meal_name)
+    except Exception as e:
+        print(f"[scheduler] Meal entry error (may already exist): {e}")
+
+    sent_count = 0
+    skip_count = 0
+    error_count = 0
+    details = []
+
+    survey_type = "button"  # Default survey type for auto-send
+
+    for user in available_users:
+        phone = user["phoneno"]
+        user_id = user["id"]
+        user_name = user.get("name", "")
+
+        # Create pending response (skips if already exists)
+        response = db.create_response(user_id, today_pkt, meal_name)
+        if not response:
+            skip_count += 1
+            details.append({"phone": phone, "name": user_name, "status": "skipped", "reason": "already has response"})
+            continue
+
+        try:
+            print(f"[scheduler] Sending survey to {user_name} ({phone}) for {meal_name}")
+            wa.send_survey(phone, meal_name, survey_type)
+            sent_count += 1
+            details.append({"phone": phone, "name": user_name, "status": "sent"})
+        except Exception as e:
+            print(f"[scheduler] Failed to send to {phone}: {e}")
+            error_count += 1
+            details.append({"phone": phone, "name": user_name, "status": "error", "error": str(e)})
+
+    log_entry = {
+        "timestamp": now_str,
+        "date": today_pkt,
+        "status": "completed",
+        "mealName": meal_name,
+        "surveyType": survey_type,
+        "sent": sent_count,
+        "skipped": skip_count,
+        "errors": error_count,
+        "totalAvailable": len(available_users),
+        "details": details,
+    }
+    _auto_send_log.append(log_entry)
+    if len(_auto_send_log) > MAX_AUTO_LOG:
+        _auto_send_log.pop(0)
+
+    print(f"[scheduler] Auto-send complete: {sent_count} sent, {skip_count} skipped, {error_count} errors")
+
+
+# ── Scheduler API ──────────────────────────────────────────────────────
+
+
+@app.route("/api/scheduler/status")
+def scheduler_status():
+    """Get the current auto-scheduler status."""
+    jobs = []
+    if scheduler.running:
+        for job in scheduler.get_jobs():
+            jobs.append({
+                "id": job.id,
+                "name": job.name,
+                "nextRun": str(job.next_run_time) if job.next_run_time else None,
+            })
+
+    last_log = _auto_send_log[-1] if _auto_send_log else None
+
+    return jsonify({
+        "enabled": _auto_enabled,
+        "running": scheduler.running,
+        "schedule": "2:30 PM PKT (Asia/Karachi) daily",
+        "jobs": jobs,
+        "lastRun": last_log,
+    })
+
+
+@app.route("/api/scheduler/logs")
+def scheduler_logs():
+    """Get recent auto-scheduler execution logs."""
+    return jsonify({"logs": _auto_send_log, "count": len(_auto_send_log)})
+
+
+@app.route("/api/scheduler/toggle", methods=["POST"])
+def scheduler_toggle():
+    """Enable or disable the auto-scheduler."""
+    global _auto_enabled
+    data = request.get_json(silent=True) or {}
+    action = data.get("action", "").lower()  # "enable" or "disable"
+
+    if action == "enable":
+        _auto_enabled = True
+        # Resume the job if paused
+        for job in scheduler.get_jobs():
+            job.resume()
+        return jsonify({"status": "enabled", "enabled": True})
+    elif action == "disable":
+        _auto_enabled = False
+        # Pause the job
+        for job in scheduler.get_jobs():
+            job.pause()
+        return jsonify({"status": "disabled", "enabled": False})
+    else:
+        return jsonify({"error": "Use action='enable' or action='disable'"}), 400
+
+
 # ── Run ───────────────────────────────────────────────────────────────
+
+# Initialize the background scheduler
+pkt = pytz.timezone("Asia/Karachi")
+scheduler = BackgroundScheduler(timezone=pkt)
+scheduler.add_job(
+    _auto_send_survey,
+    CronTrigger(hour=14, minute=30, timezone=pkt),  # 2:30 PM Pakistan time
+    id="auto_survey",
+    name="Auto Send Meal Survey",
+    replace_existing=True,
+)
+scheduler.start()
+print(f"[app] Auto-scheduler started — sends survey daily at 2:30 PM PKT (enabled={_auto_enabled})")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
