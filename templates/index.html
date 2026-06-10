@@ -103,8 +103,8 @@
       <div class="row">
         <div class="field">
           <label for="mealName">Meal Name</label>
-          <input id="mealName" type="text" placeholder="Auto-fetched from meal table or type manually" />
-          <div class="hint">Auto-filled from the meal registered for the selected date above.</div>
+          <input id="mealName" type="text" placeholder="Fetching..." readonly style="background:#f8fafc;cursor:default;" />
+          <div class="hint" id="mealHint">Auto-filled from the meal registered for the selected date.</div>
         </div>
         <div class="field">
           <label for="surveyType">Survey Type</label>
@@ -179,6 +179,10 @@
           <span id="availDateCount" style="color:#64748b;font-size:0.82rem;"></span>
         </div>
 
+        <div id="holidayNotice" style="display:none;margin-bottom:12px;padding:10px 14px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;font-size:0.85rem;">
+          <strong>Holiday</strong> — No meal registered for this date. No tokens, no meal, no survey requests.
+        </div>
+
         <div style="overflow-x:auto;">
           <table>
             <thead>
@@ -234,31 +238,61 @@
     async function onDateChange() {
       await autoFetchMealName();
       loadAvailCount();
-      // Refresh the active tab
-      var activeTab = document.querySelector('.tab.active');
-      if (activeTab) {
-        if (activeTab.dataset.tab === 'users') loadUsers();
-        if (activeTab.dataset.tab === 'responses') loadResponses();
-      }
+      // Refresh ALL tabs regardless of which is active
+      loadUsers();
+      loadResponses();
+      loadSurveys();
     }
+
+    // ── Track holiday state globally ──────────────────────────────
+    var _isHoliday = false;
 
     // ── Auto-fetch meal name for selected date ──────────────────────
     async function autoFetchMealName() {
       var date = getDate();
       var nameInput = document.getElementById('mealName');
+      var hintEl = document.getElementById('mealHint');
+      var sendBtn = document.getElementById('sendButton');
       if (!date) return;
+
+      // Reset while fetching
+      nameInput.value = '';
+      nameInput.placeholder = 'Fetching...';
+
       try {
         var r = await fetch('/api/meal/' + date);
         if (!r.ok) return;
         var data = await r.json();
-        // Always update — if meal exists for this date, fill it in
+
         if (data.meal_name) {
+          // Meal found — not a holiday
+          _isHoliday = false;
           nameInput.value = data.meal_name;
+          nameInput.placeholder = '';
+          hintEl.textContent = 'Auto-filled from the meal registered for this date.';
+          hintEl.style.color = '';
+          sendBtn.disabled = false;
+          sendBtn.textContent = 'Send Survey';
         } else {
+          // No meal = HOLIDAY
+          _isHoliday = true;
           nameInput.value = '';
-          nameInput.placeholder = 'No meal registered for this date — type to add';
+          nameInput.placeholder = '— Holiday —';
+          hintEl.textContent = 'No meal registered for this date = Holiday. No survey can be sent.';
+          hintEl.style.color = '#dc2626';
+          sendBtn.disabled = true;
+          sendBtn.textContent = 'Holiday — No Survey';
         }
-      } catch(e) { console.error(e); }
+      } catch(e) {
+        console.error(e);
+        _isHoliday = true;
+        nameInput.value = '';
+        nameInput.placeholder = 'Error fetching meal';
+        hintEl.textContent = 'Could not fetch meal info. Try refreshing.';
+        hintEl.style.color = '#dc2626';
+        sendBtn.disabled = true;
+        sendBtn.textContent = 'Error — No Survey';
+      }
     }
 
     // ── Load availed user count ─────────────────────────────────────
@@ -298,6 +332,8 @@
       var surveyType = document.getElementById('surveyType').value;
 
       if (!surveyDate) { showStatus('err', 'Select a date.'); return; }
+      if (_isHoliday) { showStatus('err', 'No meal registered for this date (Holiday). Cannot send survey.'); return; }
+      if (!mealName) { showStatus('err', 'No meal name found for this date. Cannot send survey.'); return; }
 
       var btn = this;
       btn.disabled = true;
@@ -330,8 +366,14 @@
       } catch (err) {
         showStatus('err', 'Error: ' + err.message);
       } finally {
-        btn.disabled = false;
-        btn.textContent = 'Send Survey';
+        // Only re-enable if not a holiday
+        if (_isHoliday) {
+          btn.disabled = true;
+          btn.textContent = 'Holiday — No Survey';
+        } else {
+          btn.disabled = false;
+          btn.textContent = 'Send Survey';
+        }
       }
     });
 
@@ -426,6 +468,20 @@
         var availedCount = Object.values(_mealavailMap).filter(Boolean).length;
         document.getElementById('availDateCount').textContent = availedCount + ' of ' + users.length + ' availed for ' + date;
 
+        // If holiday, show notice and disable toggles
+        if (_isHoliday) {
+          document.getElementById('availDateCount').textContent = 'Holiday — no meal on ' + date;
+          document.getElementById('availDateCount').style.color = '#dc2626';
+          document.getElementById('holidayNotice').style.display = 'block';
+          document.getElementById('selectAllAvail').disabled = true;
+          document.getElementById('deselectAllAvail').disabled = true;
+        } else {
+          document.getElementById('availDateCount').style.color = '';
+          document.getElementById('holidayNotice').style.display = 'none';
+          document.getElementById('selectAllAvail').disabled = false;
+          document.getElementById('deselectAllAvail').disabled = false;
+        }
+
         if (users.length === 0) {
           document.getElementById('usersBody').innerHTML = '';
           document.getElementById('emptyUsers').style.display = 'block';
@@ -436,10 +492,11 @@
         var html = '';
         users.forEach(function(u) {
           var checked = _mealavailMap[u.id] ? 'checked' : '';
+          var disabled = _isHoliday ? 'disabled' : '';
           html += '<tr>' +
             '<td>' + esc(u.name) + '</td>' +
             '<td>' + esc(u.phoneno) + '</td>' +
-            '<td><label class="toggle"><input type="checkbox" ' + checked + ' data-userid="' + u.id + '" class="avail-toggle" /><span class="slider"></span></label></td>' +
+            '<td><label class="toggle"><input type="checkbox" ' + checked + ' ' + disabled + ' data-userid="' + u.id + '" class="avail-toggle" /><span class="slider"></span></label></td>' +
             '<td><button class="btn-danger btn-sm" onclick="deleteUser(\'' + u.id + '\',\'' + esc(u.name) + '\')">Delete</button></td>' +
           '</tr>';
         });

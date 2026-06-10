@@ -118,13 +118,15 @@ def send_survey():
 
     Request body:
     {
-        "mealName": "Chicken Biryani",   // optional — auto-fetched from tbl_meal if not provided
         "surveyDate": "2026-06-10",
         "surveyType": "button"   // optional, defaults to "button"
     }
 
+    IMPORTANT: If no meal exists in tbl_meal for the selected date, it is treated
+    as a HOLIDAY — no tokens, no meal, no survey requests can be sent.
+
     Sends to users with availstatus=true in tbl_mealavail for that date.
-    Creates a meal entry and pending response rows in Supabase.
+    Creates pending response rows in Supabase.
     """
     data = request.get_json(silent=True) or {}
     meal_name = data.get("mealName", "").strip()
@@ -134,15 +136,16 @@ def send_survey():
     if not _validate_date(survey_date):
         return jsonify({"error": f"Invalid survey date '{survey_date}'. Use YYYY-MM-DD, not in the future."}), 400
 
-    # Auto-fetch meal name from tbl_meal if not provided
+    # Check if meal exists for this date — if not, it's a holiday (no survey)
+    meal_entry = db.get_meal_by_date(survey_date)
+    if meal_entry:
+        meal_name = meal_entry.get("meal_name", meal_name)
+        print(f"[survey] Meal for {survey_date}: {meal_name}")
+    else:
+        return jsonify({"error": f"No meal registered for {survey_date}. This is a holiday — no tokens, no meal, no survey."}), 400
+
     if not meal_name:
-        meal_entry = db.get_meal_by_date(survey_date)
-        if meal_entry:
-            meal_name = meal_entry.get("meal_name", "")
-            print(f"[survey] Auto-fetched meal name for {survey_date}: {meal_name}")
-    
-    if not meal_name:
-        return jsonify({"error": "Meal name is required. Either provide it or ensure a meal is registered for the selected date."}), 400
+        return jsonify({"error": "Meal name is required. Ensure a meal is registered for the selected date."}), 400
 
     # Get users who availed the meal on this date (from tbl_mealavail)
     available_users = db.get_available_users_for_date(survey_date)
