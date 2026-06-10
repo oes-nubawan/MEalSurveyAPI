@@ -10,9 +10,12 @@ Key features:
 6. User management from UI
 7. Auto-send via external cron (cron-job.org) — works on Render free tier
 
-NO APScheduler — Render free tier sleeps after 15 min of inactivity,
-so in-process schedulers are useless. Instead, use a free external cron
-service to hit /api/cron/daily-survey at 2:30 PM PKT daily.
+RENDER FREE TIER — SERVER WAKE-UP STRATEGY:
+Render sleeps after 15 min of inactivity. When sleeping, the first request
+wakes the server (takes ~30-60s). To ensure the cron endpoint runs reliably:
+  • Job 1 (2:25 PM PKT): Hit /api/health/ping → wakes the server
+  • Job 2 (2:30 PM PKT): Hit /api/cron/daily-survey → sends surveys
+Both jobs are set up on cron-job.org (free).
 
 Environment variables:
 - WHATSAPP_TOKEN
@@ -41,6 +44,10 @@ MAX_WEBHOOK_LOG = 20
 # ── Auto-send log (for UI display) ────────────────────────────────────
 _auto_send_log = []
 MAX_AUTO_LOG = 20
+
+# ── Server wake-up tracking ─────────────────────────────────────────────
+_last_ping_time = None  # When the server was last pinged awake
+_server_start_time = datetime.now(timezone.utc)  # When this process started
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -74,6 +81,34 @@ def _validate_date(date_str: str) -> bool:
 def _clean_phone(phone: str) -> str:
     """Clean a phone number — strip + and spaces."""
     return phone.strip().replace("+", "").replace(" ", "")
+
+
+# ── Health / Ping (lightweight — wakes Render free tier) ──────────────
+
+
+@app.route("/api/health/ping")
+def health_ping():
+    """Ultra-lightweight endpoint to wake the Render server.
+
+    Returns immediately with minimal JSON. Use cron-job.org to hit this
+    at 2:25 PM PKT (5 min before the survey cron) so the server is warm
+    when /api/cron/daily-survey fires at 2:30 PM PKT.
+    """
+    global _last_ping_time
+    _last_ping_time = _pkt_now().strftime("%Y-%m-%d %H:%M:%S")
+    return jsonify({"status": "awake", "time": _last_ping_time}), 200
+
+
+@app.route("/api/health/status")
+def health_status():
+    """Slightly more detail — server uptime, last ping, etc."""
+    uptime_seconds = (datetime.now(timezone.utc) - _server_start_time).total_seconds()
+    return jsonify({
+        "status": "running",
+        "uptime_seconds": int(uptime_seconds),
+        "last_ping": _last_ping_time,
+        "server_start": _server_start_time.strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }), 200
 
 
 # ── Routes ────────────────────────────────────────────────────────────
@@ -318,8 +353,16 @@ def scheduler_status():
     return jsonify({
         "method": "external_cron",
         "schedule": "2:30 PM PKT daily via cron-job.org",
-        "cronEndpoint": "/api/cron/daily-survey?secret=YOUR_CRON_SECRET",
+        "wakeUpSchedule": "2:25 PM PKT — hits /api/health/ping to wake server",
+        "cronJobs": [
+            {"time": "2:25 PM PKT (09:25 UTC)", "endpoint": "/api/health/ping", "purpose": "Wake server (takes ~30-60s from cold start)"},
+            {"time": "2:30 PM PKT (09:30 UTC)", "endpoint": "/api/cron/daily-survey?secret=YOUR_CRON_SECRET", "purpose": "Send surveys to availed users"},
+        ],
         "lastRun": last_log,
+        "serverHealth": {
+            "lastPing": _last_ping_time,
+            "uptime_seconds": int((datetime.now(timezone.utc) - _server_start_time).total_seconds()),
+        },
     })
 
 
@@ -447,8 +490,14 @@ def get_meal_by_date(meal_date):
 
 @app.route("/api/ui/recent")
 def get_recent():
+    """Get recent responses. Supports ?date=YYYY-MM-DD for server-side filtering (saves bandwidth)."""
     try:
-        recent = db.get_recent(50)
+        date_filter = request.args.get("date", "").strip()
+        if date_filter:
+            # Server-side filter — only fetch responses for this date
+            recent = db.get_recent_by_date(date_filter, 50)
+        else:
+            recent = db.get_recent(50)
         return jsonify(recent)
     except Exception as e:
         print(f"[ui] Error fetching recent: {e}")

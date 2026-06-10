@@ -500,6 +500,40 @@ class SupabaseStore:
             })
         return result
 
+    def get_recent_by_date(self, meal_date: str, count: int = 50) -> list[dict]:
+        """Get recent responses filtered by date — server-side filter saves bandwidth."""
+        # Get responses for this date
+        responses = self._get("tbl_usersresponse", {
+            "meal_date": f"eq.{meal_date}",
+            "select": "*",
+            "order": "created_at.desc",
+            "limit": str(count),
+        })
+        if not responses:
+            return []
+        # Enrich with user data
+        user_ids = list(set(r["user_id"] for r in responses))
+        users = self._get("tbl_users", {
+            "select": "id,name,phoneno",
+            "id": f"in.({','.join(user_ids)})",
+        })
+        user_map = {u["id"]: u for u in users}
+        result = []
+        for r in responses:
+            user = user_map.get(r["user_id"], {})
+            result.append({
+                "id": r.get("id", "")[:8],
+                "phone": user.get("phoneno", ""),
+                "userName": user.get("name", ""),
+                "mealName": r.get("meal_name", ""),
+                "surveyDate": r.get("meal_date", ""),
+                "rating": r.get("user_response", ""),
+                "comment": r.get("remarks"),
+                "responseStatus": r.get("response_status", ""),
+                "createdAt": r.get("response_datetime") or r.get("created_at", ""),
+            })
+        return result
+
     def reset_user(self, phone: str):
         """Compatibility: reset all responses for a user."""
         self.reset_user_responses(phone)

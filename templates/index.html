@@ -128,14 +128,15 @@
     <!-- Auto-Send (External Cron) -->
     <div class="card" style="padding:14px 24px;">
       <div style="display:flex;align-items:center;gap:8px;">
-        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2563eb;"></span>
+        <span id="healthDot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#94a3b8;"></span>
         <strong style="font-size:0.88rem;">Auto-Send</strong>
         <span style="font-size:0.78rem;color:#64748b;">2:30 PM PKT daily via cron-job.org</span>
+        <span id="healthBadge" style="font-size:0.7rem;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#64748b;">checking...</span>
         <span style="margin-left:auto;">
           <button id="schedulerLogsBtn" class="btn-secondary btn-sm" style="padding:4px 10px;font-size:0.75rem;">Logs</button>
         </span>
       </div>
-      <div id="schedulerInfo" style="font-size:0.75rem;color:#94a3b8;margin-top:3px;margin-left:18px;">Set up cron-job.org → GET https://your-app.onrender.com/api/cron/daily-survey?secret=YOUR_CRON_SECRET</div>
+      <div id="schedulerInfo" style="font-size:0.75rem;color:#94a3b8;margin-top:3px;margin-left:18px;">Two cron jobs: 2:25 PM wake + 2:30 PM survey</div>
     </div>
 
     <!-- Tabs -->
@@ -412,23 +413,18 @@
       } catch (err) { console.error(err); }
     });
 
-    // ── Load Responses (filtered by global date) ───────────────────
+    // ── Load Responses (server-side date filter — saves bandwidth) ──
     async function loadResponses() {
       try {
-        var response = await fetch('/api/ui/recent');
+        var selectedDate = getDate();
+        // Server-side filter: only fetch responses for the selected date
+        var url = selectedDate ? '/api/ui/recent?date=' + encodeURIComponent(selectedDate) : '/api/ui/recent';
+        var response = await fetch(url);
         if (!response.ok) return;
         var data = await response.json();
         if (data.error) { document.getElementById('responsesBody').innerHTML = '<tr><td colspan="9" style="color:#dc2626;">' + esc(data.error) + '</td></tr>'; return; }
 
-        // Filter by global date
-        var selectedDate = getDate();
         var filtered = data;
-        if (selectedDate) {
-          filtered = data.filter(function(item) {
-            return item.surveyDate === selectedDate;
-          });
-        }
-
         document.getElementById('feedbackCount').textContent = filtered.length + ' entries' + (selectedDate ? ' for ' + selectedDate : '');
 
         if (filtered.length === 0) {
@@ -648,7 +644,7 @@
       var cb = document.getElementById('autoRefresh');
       function toggle() {
         if (refreshInterval) clearInterval(refreshInterval);
-        if (cb.checked) refreshInterval = setInterval(loadResponses, 15000);
+        if (cb.checked) refreshInterval = setInterval(loadResponses, 30000);
       }
       cb.addEventListener('change', toggle);
       toggle();
@@ -673,13 +669,33 @@
       } catch(e) { document.getElementById('debugOutput').textContent = 'Error: ' + e.message; }
     });
 
-    // ── Auto-Send Logs ────────────────────────────────────────────
+    // ── Auto-Send Logs + Health Check ────────────────────────────────
     async function loadSchedulerStatus() {
       try {
         var r = await fetch('/api/scheduler/status');
         if (!r.ok) return;
         var data = await r.json();
         var info = document.getElementById('schedulerInfo');
+        var dot = document.getElementById('healthDot');
+        var badge = document.getElementById('healthBadge');
+
+        // Health indicator
+        if (data.serverHealth && data.serverHealth.uptime_seconds !== undefined) {
+          var uptime = data.serverHealth.uptime_seconds;
+          var uptimeMin = Math.round(uptime / 60);
+          if (uptime < 120) {
+            dot.style.background = '#f59e0b'; // yellow — recently started
+            badge.textContent = 'up ' + uptimeMin + 'm';
+            badge.style.background = '#fef3c7'; badge.style.color = '#92400e';
+          } else {
+            dot.style.background = '#22c55e'; // green — stable
+            var hrs = Math.round(uptime / 3600);
+            badge.textContent = hrs < 1 ? 'up ' + uptimeMin + 'm' : 'up ' + hrs + 'h';
+            badge.style.background = '#dcfce7'; badge.style.color = '#166534';
+          }
+        }
+
+        // Cron info
         var lastRun = '';
         if (data.lastRun) {
           var lr = data.lastRun;
@@ -687,7 +703,9 @@
           else if (lr.status === 'completed') lastRun = 'Last: ' + lr.sent + ' sent on ' + lr.date;
           else lastRun = 'Last: ' + (lr.message || lr.status);
         }
-        info.textContent = lastRun || 'Set up cron-job.org to call /api/cron/daily-survey?secret=YOUR_CRON_SECRET at 2:30 PM PKT';
+        var cronInfo = '2 cron jobs on cron-job.org: 2:25 PM wake → 2:30 PM survey';
+        if (lastRun) cronInfo += ' | ' + lastRun;
+        info.textContent = cronInfo;
       } catch(e) { /* silent */ }
     }
 

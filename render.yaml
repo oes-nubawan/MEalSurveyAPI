@@ -25,3 +25,21 @@ services:
         sync: false
       - key: CRON_SECRET
         sync: false
+
+# ── CRON-JOB.ORG SETUP (two jobs required for Render free tier) ──────
+#
+# Render free tier sleeps after 15 min of inactivity.
+# When asleep, the first request wakes the server (~30-60s cold start).
+# To guarantee the survey cron runs on time, set up TWO jobs:
+#
+# Job 1 — WAKE SERVER (5 min before survey)
+#   URL:    https://your-app.onrender.com/api/health/ping
+#   When:   Every day at 09:25 UTC (2:25 PM PKT)
+#   Method: GET
+#
+# Job 2 — SEND SURVEYS
+#   URL:    https://your-app.onrender.com/api/cron/daily-survey?secret=YOUR_CRON_SECRET
+#   When:   Every day at 09:30 UTC (2:30 PM PKT)
+#   Method: GET
+#
+# The 5-minute gap ensures the server is fully awake when Job 2 fires.
