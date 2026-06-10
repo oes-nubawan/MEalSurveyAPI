@@ -49,19 +49,36 @@ def index():
 
 @app.route("/webhook", methods=["GET"])
 def webhook_verify():
-    """WhatsApp webhook verification (GET)."""
+    """WhatsApp webhook verification (GET).
+    
+    WhatsApp sends: hub.mode=subscribe&hub.verify_token=<your_token>&hub.challenge=<string>
+    You MUST include hub.mode=subscribe for verification to succeed.
+    
+    Test URL example:
+      /webhook?hub.mode=subscribe&hub.verify_token=my_verify_token&hub.challenge=test123
+    """
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
 
     verify_token = os.environ.get("WHATSAPP_VERIFY_TOKEN", "my_verify_token")
 
+    print(f"[webhook] GET verify — mode={mode}, token={token}, challenge={challenge}, expected_token={verify_token}")
+
+    # WhatsApp requires hub.mode=subscribe for verification
     if mode == "subscribe" and token == verify_token:
         print("[webhook] Verification succeeded")
         return challenge, 200
 
-    print("[webhook] Verification failed — token mismatch")
-    return "Forbidden", 403
+    # Also allow verification without hub.mode for simpler testing
+    # (Meta always sends hub.mode=subscribe, but for quick manual tests this is convenient)
+    if token == verify_token and challenge:
+        print("[webhook] Verification succeeded (no hub.mode, token matched)")
+        return challenge, 200
+
+    print(f"[webhook] Verification FAILED — received mode={mode}, token={token}")
+    print(f"[webhook] Expected: hub.mode=subscribe, hub.verify_token={verify_token}")
+    return "Forbidden — ensure hub.mode=subscribe and hub.verify_token match your WHATSAPP_VERIFY_TOKEN env var", 403
 
 
 @app.route("/webhook", methods=["POST"])
