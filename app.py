@@ -4,7 +4,7 @@ WhatsApp Meal Survey — Flask Application
 A Python Flask app that sends meal satisfaction surveys via WhatsApp
 and collects feedback with these key features:
 
-1. ONE response per user — duplicates are blocked at multiple levels
+1. ONE response per user per day — date-based duplicate blocking
 2. 4 rating options: Very Good, Good, Satisfactory, Not Acceptable
 3. When "Not Acceptable" is selected, user can type free-text complaint
 4. Frontend dashboard shows all responses in real-time
@@ -20,10 +20,11 @@ Deploy to Render with environment variables:
 """
 
 import os
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template
 import store
 from whatsapp_service import WhatsAppService
-from conversation import process_webhook, mark_phone_completed, unmark_phone_completed
+from conversation import process_webhook, unmark_all_for_phone, unmark_completed_for_date
 
 app = Flask(__name__)
 
@@ -94,7 +95,6 @@ def webhook_verify():
         return challenge, 200
 
     # Also allow verification without hub.mode for simpler testing
-    # (Meta always sends hub.mode=subscribe, but for quick manual tests this is convenient)
     if token == verify_token and challenge:
         print("[webhook] Verification succeeded (no hub.mode, token matched)")
         return challenge, 200
@@ -133,26 +133,35 @@ def webhook_receive():
 
 @app.route("/api/survey/send", methods=["POST"])
 def send_survey():
-    """Send a meal survey to a WhatsApp user."""
+    """Send a meal survey to a WhatsApp user.
+    
+    Accepts optional surveyDate (YYYY-MM-DD). Defaults to today (UTC).
+    The surveyDate is stored in user state and used for date-based duplicate checks.
+    It is NOT shown to the WhatsApp user.
+    """
     data = request.get_json(silent=True) or {}
     phone = data.get("phone", "").strip()
     meal_name = data.get("mealName", "").strip()
     survey_type = (data.get("surveyType") or "list").lower()
+    # Auto-set surveyDate to today (UTC) if not provided
+    survey_date = data.get("surveyDate", "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     if not phone or not meal_name:
         return jsonify({"error": "Phone and MealName are required."}), 400
 
-    # Set user state so we can track it through the conversation
-    store.set_state(phone, "SURVEY_SENT", meal_name)
+    # Set user state with surveyDate — this also implicitly "resets" the user
+    # for a new survey date, allowing them to respond again
+    store.set_state(phone, "SURVEY_SENT", meal_name, survey_date)
 
     try:
-        print(f"[survey] Sending {survey_type} survey to {phone} for {meal_name}")
+        print(f"[survey] Sending {survey_type} survey to {phone} for {meal_name} (date: {survey_date})")
         resp = wa.send_survey(phone, meal_name, survey_type)
         return jsonify({
             "status": "sent",
             "phone": phone,
             "mealName": meal_name,
             "surveyType": survey_type,
+            "surveyDate": survey_date,
         })
     except Exception as e:
         print(f"[survey] WhatsApp API error: {e}")
@@ -185,7 +194,7 @@ def reset_user(phone):
     """Reset all feedback and state for a phone number (testing)."""
     print(f"[ui] Resetting user {phone}")
     store.reset_user(phone)
-    unmark_phone_completed(phone)
+    unmark_all_for_phone(phone)
     return jsonify({"status": "reset", "phone": phone})
 
 

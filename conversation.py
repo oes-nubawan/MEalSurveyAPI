@@ -1,15 +1,15 @@
 """
 Conversation handler — processes incoming WhatsApp messages with a state machine.
 
-Key design decisions (fixing the .NET bugs):
-1. DUPLICATE PREVENTION: A completed_phones set is checked FIRST, before any
-   processing. Once a phone has submitted a complete response, ALL subsequent
-   messages from that phone are rejected.
-2. NOT ACCEPTABLE FLOW: When user selects "Not Acceptable", we save a partial
-   entry (rating=not_ok, comment=None), set state to WAITING_COMMENT, and send
-   a plain text message asking for their feedback. The NEXT text message the
-   user sends is captured as the complaint.
-3. STATE PERSISTENCE: State is saved to JSON so it survives restarts.
+Duplicate prevention: DATE-BASED. One response per phone per surveyDate.
+- When a new survey is sent, the survey date is stored in the user's state.
+- The duplicate check looks for existing feedback for that phone + surveyDate.
+- A new survey for a different date allows the user to respond again.
+
+Not Acceptable flow:
+- User selects "Not Acceptable" → partial entry saved → WAITING_COMMENT state
+- Next text message from user is captured as their complaint
+- State persisted to JSON so it survives restarts
 """
 
 import threading
@@ -22,9 +22,9 @@ import store
 _phone_locks: dict[str, threading.Lock] = {}
 _phone_locks_lock = threading.Lock()
 
-# ── Completed phones set — checked FIRST to block duplicates ───────────
-# Maps phone -> timestamp of completion
-_completed_phones: dict[str, float] = {}
+# ── Completed phones+date set — fast in-memory duplicate check ─────────
+# Key format: "phone_lower::YYYY-MM-DD" → True
+_completed: dict[str, bool] = {}
 _completed_lock = threading.Lock()
 
 
@@ -35,22 +35,36 @@ def _get_phone_lock(phone: str) -> threading.Lock:
         return _phone_locks[phone]
 
 
-def is_phone_completed(phone: str) -> bool:
-    """Check if a phone has already submitted feedback."""
+def _make_key(phone: str, survey_date: str) -> str:
+    """Create a composite key for the completed set: phone::date"""
+    return f"{phone.lower()}::{survey_date}"
+
+
+def is_completed_for_date(phone: str, survey_date: str) -> bool:
+    """Check if a phone has already submitted feedback for a specific date."""
     with _completed_lock:
-        return phone.lower() in _completed_phones
+        return _make_key(phone, survey_date) in _completed
 
 
-def mark_phone_completed(phone: str):
-    """Mark a phone as having completed feedback."""
+def mark_completed_for_date(phone: str, survey_date: str):
+    """Mark a phone as having completed feedback for a specific date."""
     with _completed_lock:
-        _completed_phones[phone.lower()] = True
+        _completed[_make_key(phone, survey_date)] = True
 
 
-def unmark_phone_completed(phone: str):
-    """Remove phone from completed set (for testing/reset)."""
+def unmark_completed_for_date(phone: str, survey_date: str):
+    """Remove phone+date from completed set (for testing/reset)."""
     with _completed_lock:
-        _completed_phones.pop(phone.lower(), None)
+        _completed.pop(_make_key(phone, survey_date), None)
+
+
+def unmark_all_for_phone(phone: str):
+    """Remove all date entries for a phone (for testing/reset)."""
+    with _completed_lock:
+        prefix = phone.lower() + "::"
+        keys_to_remove = [k for k in _completed if k.startswith(prefix)]
+        for k in keys_to_remove:
+            del _completed[k]
 
 
 # ── Template button text → internal rating ID mapping ──────────────────
@@ -93,19 +107,20 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
     """Internal handler — runs under per-phone lock."""
 
     state = store.get_state(user)
+    survey_date = state.get("surveyDate", "") if state else ""
+    meal_name = state.get("mealName", "") if state else ""
     print(f"[conversation] User state: {state}")
 
     # ══════════════════════════════════════════════════════════════════════
     #  WAITING_COMMENT: user selected "Not Acceptable" and we're waiting
-    #  for them to type their complaint. The NEXT text message they send
-    #  is their complaint.
+    #  for them to type their complaint.
     # ══════════════════════════════════════════════════════════════════════
     if state and state.get("state") == "WAITING_COMMENT":
         if input_text == "skip_complaint":
-            _finalize_not_acceptable(user, None, "skipped", wa)
+            _finalize_not_acceptable(user, survey_date, None, "skipped", wa)
         else:
             # Any text input is the user's complaint
-            _finalize_not_acceptable(user, input_text, "free_text", wa)
+            _finalize_not_acceptable(user, survey_date, input_text, "free_text", wa)
         return
 
     # ══════════════════════════════════════════════════════════════════════
@@ -114,70 +129,81 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
     if state and state.get("state") == "WAITING_TWO_STEP_COMMENT":
         if input_text.lower() == "skip" or input_text == "skip_comment":
             print(f"[conversation] User {user} skipped comment (two-step)")
-            mark_phone_completed(user)
+            mark_completed_for_date(user, survey_date)
             store.remove_state(user)
-            wa.send_text(user, "Thank you for your feedback! You cannot respond again.")
+            wa.send_text(user, "Thank you for your feedback!")
         else:
-            _handle_two_step_comment(user, input_text, wa)
+            _handle_two_step_comment(user, survey_date, input_text, wa)
         return
 
     # ══════════════════════════════════════════════════════════════════════
-    #  DUPLICATE RESPONSE GUARD — block if user already responded
-    #  This is checked AFTER waiting states but BEFORE any new processing
+    #  DATE-BASED DUPLICATE CHECK
+    #  Block if user already responded for this survey date.
+    #  A new survey for a different date will have a different surveyDate.
     # ══════════════════════════════════════════════════════════════════════
-    if is_phone_completed(user):
-        print(f"[conversation] User {user} already completed feedback (in-memory). Ignoring.")
-        wa.send_text(user, "You have already submitted your feedback. Thank you!")
-        return
-
-    existing = store.get_latest_by_phone(user)
-    if existing:
-        is_complete = existing.get("rating") != "not_ok" or existing.get("comment") is not None
-        if is_complete:
-            print(f"[conversation] User {user} already submitted feedback (DB). Ignoring duplicate.")
-            mark_phone_completed(user)
-            wa.send_text(user, "You have already submitted your feedback. Thank you!")
+    if survey_date:
+        if is_completed_for_date(user, survey_date):
+            print(f"[conversation] User {user} already completed feedback for {survey_date}. Ignoring.")
+            wa.send_text(user, "You have already submitted your feedback for today. Thank you!")
             return
-        # If not_ok with no comment, user is in WAITING_COMMENT flow but state was lost
-        print(f"[conversation] User {user} has incomplete not_ok entry. Re-sending prompt.")
-        store.set_state(user, "WAITING_COMMENT", existing.get("mealName", ""))
-        wa.send_text(user, f"You selected Not Acceptable for {existing.get('mealName', 'the meal')}. Please type your feedback about what went wrong:")
-        return
+
+        existing = store.get_latest_by_phone_and_date(user, survey_date)
+        if existing:
+            is_complete = existing.get("rating") != "not_ok" or existing.get("comment") is not None
+            if is_complete:
+                print(f"[conversation] User {user} already submitted feedback for {survey_date} (DB). Blocking duplicate.")
+                mark_completed_for_date(user, survey_date)
+                wa.send_text(user, "You have already submitted your feedback for today. Thank you!")
+                return
+            # not_ok with no comment — user is in WAITING_COMMENT flow but state was lost
+            print(f"[conversation] User {user} has incomplete not_ok entry for {survey_date}. Re-sending prompt.")
+            store.set_state(user, "WAITING_COMMENT", existing.get("mealName", ""), survey_date)
+            wa.send_text(user, f"You selected Not Acceptable for {existing.get('mealName', 'the meal')}. Please type your feedback about what went wrong:")
+            return
+    else:
+        # No surveyDate in state — check latest feedback regardless of date
+        # This handles legacy entries or messages sent without a prior survey
+        existing = store.get_latest_by_phone(user)
+        if existing:
+            existing_date = existing.get("surveyDate", "")
+            is_complete = existing.get("rating") != "not_ok" or existing.get("comment") is not None
+            if is_complete:
+                print(f"[conversation] User {user} has existing feedback (no surveyDate in state). Blocking.")
+                wa.send_text(user, "You have already submitted your feedback. Thank you!")
+                return
 
     # ══════════════════════════════════════════════════════════════════════
     #  ROUTE INPUT TO HANDLERS
     # ══════════════════════════════════════════════════════════════════════
 
-    meal_name = state.get("mealName", "") if state else ""
-
     # "Not Acceptable" from ANY survey type
     if input_text in ("not_ok", "ts_not_ok"):
-        _handle_not_acceptable(user, meal_name, wa)
+        _handle_not_acceptable(user, meal_name, survey_date, wa)
         return
 
     # Two-step positive rating (ts_ prefix)
     if input_text.startswith("ts_"):
         rating = input_text[3:]  # strip "ts_" prefix
-        _handle_two_step_rating(user, rating, meal_name, wa)
+        _handle_two_step_rating(user, rating, meal_name, survey_date, wa)
         return
 
     # Standard positive ratings
     if input_text in ("very_good", "good", "satisfactory"):
-        _handle_positive_rating(user, input_text, meal_name, wa)
+        _handle_positive_rating(user, input_text, meal_name, survey_date, wa)
         return
 
     # Two-step add_comment / skip_comment (when not in WAITING state)
     if input_text == "add_comment":
         print(f"[conversation] User {user} wants to add comment (two-step).")
-        store.set_state(user, "WAITING_TWO_STEP_COMMENT", meal_name)
+        store.set_state(user, "WAITING_TWO_STEP_COMMENT", meal_name, survey_date)
         wa.send_text(user, "Please type your comment below:")
         return
 
     if input_text == "skip_comment":
         print(f"[conversation] User {user} skipped comment (two-step).")
-        mark_phone_completed(user)
+        mark_completed_for_date(user, survey_date)
         store.remove_state(user)
-        wa.send_text(user, "Thank you for your feedback! You cannot respond again.")
+        wa.send_text(user, "Thank you for your feedback!")
         return
 
     # Unrecognised input
@@ -190,9 +216,9 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
 # ═════════════════════════════════════════════════════════════════════════
 
 
-def _handle_positive_rating(user: str, rating: str, meal_name: str, wa: WhatsAppService):
-    """Positive/neutral rating — save immediately, one-and-done."""
-    print(f"[conversation] User {user} rated: {rating}")
+def _handle_positive_rating(user: str, rating: str, meal_name: str, survey_date: str, wa: WhatsAppService):
+    """Positive/neutral rating — save immediately, one-and-done for this date."""
+    print(f"[conversation] User {user} rated: {rating} for date: {survey_date}")
 
     entry = {
         "phone": user,
@@ -200,35 +226,36 @@ def _handle_positive_rating(user: str, rating: str, meal_name: str, wa: WhatsApp
         "rating": rating,
         "comment": None,
         "commentCategory": None,
+        "surveyDate": survey_date,
     }
     store.add_feedback(entry)
-    mark_phone_completed(user)
+    mark_completed_for_date(user, survey_date)
     store.remove_state(user)
-    wa.send_text(user, "Thank you for your feedback! You cannot respond again.")
+    wa.send_text(user, "Thank you for your feedback!")
 
 
-def _handle_not_acceptable(user: str, meal_name: str, wa: WhatsAppService):
+def _handle_not_acceptable(user: str, meal_name: str, survey_date: str, wa: WhatsAppService):
     """
     "Not Acceptable" selected — save partial entry, set WAITING_COMMENT state,
     send a plain text message asking user to type their complaint.
     """
-    print(f"[conversation] User {user} rated Not Acceptable. Asking for free-text complaint.")
+    print(f"[conversation] User {user} rated Not Acceptable for date: {survey_date}. Asking for free-text complaint.")
 
-    # Save a partial entry — marks the user as having responded
+    # Save a partial entry — marks the user as having responded for this date
     entry = {
         "phone": user,
         "mealName": meal_name or "the meal",
         "rating": "not_ok",
         "comment": None,
         "commentCategory": None,
+        "surveyDate": survey_date,
     }
     store.add_feedback(entry)
 
     # Set state so we capture the next text message as the complaint
-    store.set_state(user, "WAITING_COMMENT", meal_name or "the meal")
+    store.set_state(user, "WAITING_COMMENT", meal_name or "the meal", survey_date)
 
-    # Send plain text asking for feedback — this is more reliable than
-    # interactive buttons and makes it clear to the user they should TYPE
+    # Send plain text asking for feedback
     try:
         wa.send_text(
             user,
@@ -237,26 +264,25 @@ def _handle_not_acceptable(user: str, meal_name: str, wa: WhatsAppService):
         )
     except Exception as e:
         print(f"[conversation] Failed to send Not Acceptable prompt to {user}: {e}")
-        # State is already set, so when user types something it will be captured
 
 
-def _finalize_not_acceptable(user: str, complaint_text: Optional[str], category: str, wa: WhatsAppService):
+def _finalize_not_acceptable(user: str, survey_date: str, complaint_text: Optional[str], category: str, wa: WhatsAppService):
     """Finalize a Not Acceptable response — update the partial entry with the complaint text."""
-    print(f"[conversation] User {user} finalizing Not Acceptable. Complaint: {complaint_text or '(skipped)'}")
+    print(f"[conversation] User {user} finalizing Not Acceptable for {survey_date}. Complaint: {complaint_text or '(skipped)'}")
 
     store.update_feedback_comment(user, complaint_text, category)
-    mark_phone_completed(user)
+    mark_completed_for_date(user, survey_date)
     store.remove_state(user)
 
     if complaint_text:
-        wa.send_text(user, "Thank you for your detailed feedback! You cannot respond again.")
+        wa.send_text(user, "Thank you for your detailed feedback!")
     else:
-        wa.send_text(user, "Thank you for your feedback! You cannot respond again.")
+        wa.send_text(user, "Thank you for your feedback!")
 
 
-def _handle_two_step_rating(user: str, rating: str, meal_name: str, wa: WhatsAppService):
+def _handle_two_step_rating(user: str, rating: str, meal_name: str, survey_date: str, wa: WhatsAppService):
     """Two-step survey positive rating — saves rating, then asks for optional comment."""
-    print(f"[conversation] User {user} rated (two-step): {rating}")
+    print(f"[conversation] User {user} rated (two-step): {rating} for date: {survey_date}")
 
     entry = {
         "phone": user,
@@ -264,9 +290,10 @@ def _handle_two_step_rating(user: str, rating: str, meal_name: str, wa: WhatsApp
         "rating": rating,
         "comment": None,
         "commentCategory": None,
+        "surveyDate": survey_date,
     }
     store.add_feedback(entry)
-    store.set_state(user, "WAITING_TWO_STEP_COMMENT", meal_name)
+    store.set_state(user, "WAITING_TWO_STEP_COMMENT", meal_name, survey_date)
 
     display = RATING_DISPLAY.get(rating, rating)
     try:
@@ -279,14 +306,14 @@ def _handle_two_step_rating(user: str, rating: str, meal_name: str, wa: WhatsApp
         print(f"[conversation] Failed to send comment prompt to {user}: {e}")
 
 
-def _handle_two_step_comment(user: str, comment: str, wa: WhatsAppService):
+def _handle_two_step_comment(user: str, survey_date: str, comment: str, wa: WhatsAppService):
     """Two-step: save the free-text comment."""
     print(f"[conversation] User {user} adding optional comment: {comment}")
 
     store.update_feedback_comment(user, comment, None)
-    mark_phone_completed(user)
+    mark_completed_for_date(user, survey_date)
     store.remove_state(user)
-    wa.send_text(user, "Thank you for your feedback! You cannot respond again.")
+    wa.send_text(user, "Thank you for your feedback!")
 
 
 # ── Message parsing ───────────────────────────────────────────────────

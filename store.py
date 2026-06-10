@@ -1,6 +1,9 @@
 """
 JSON file-based storage for feedback entries and user states.
 Thread-safe with a global lock. Data persists to data/ directory.
+
+Duplicate prevention is date-based: one response per phone per surveyDate.
+A new survey for a different date resets the user and allows a new response.
 """
 
 import json
@@ -18,7 +21,7 @@ _lock = threading.Lock()
 
 # In-memory caches (loaded from disk on startup)
 _feedback_entries: list[dict] = []
-_user_states: dict[str, dict] = {}  # phone -> state dict
+_user_states: dict[str, dict] = {}  # phone (lowercase) -> state dict
 
 
 def _ensure_data_dir():
@@ -42,7 +45,7 @@ def _load_states():
         if os.path.exists(STATES_FILE):
             with open(STATES_FILE, "r") as f:
                 state_list = json.load(f)
-                _user_states = {s["phone"]: s for s in state_list}
+                _user_states = {s["phone"].lower(): s for s in state_list}
     except Exception as e:
         print(f"[store] Error loading states: {e}")
         _user_states = {}
@@ -87,9 +90,22 @@ def add_feedback(entry: dict) -> dict:
 
 
 def get_latest_by_phone(phone: str) -> Optional[dict]:
-    """Get the most recent feedback entry for a phone number."""
+    """Get the most recent feedback entry for a phone number (any date)."""
     with _lock:
         matches = [e for e in _feedback_entries if e.get("phone", "").lower() == phone.lower()]
+        if not matches:
+            return None
+        return max(matches, key=lambda e: e.get("createdAt", ""))
+
+
+def get_latest_by_phone_and_date(phone: str, survey_date: str) -> Optional[dict]:
+    """Get the most recent feedback entry for a phone number on a specific survey date."""
+    with _lock:
+        matches = [
+            e for e in _feedback_entries
+            if e.get("phone", "").lower() == phone.lower()
+            and e.get("surveyDate") == survey_date
+        ]
         if not matches:
             return None
         return max(matches, key=lambda e: e.get("createdAt", ""))
@@ -131,13 +147,14 @@ def get_state(phone: str) -> Optional[dict]:
         return _user_states.get(phone.lower())
 
 
-def set_state(phone: str, state: str, meal_name: str = ""):
-    """Set the state for a phone number."""
+def set_state(phone: str, state: str, meal_name: str = "", survey_date: str = ""):
+    """Set the state for a phone number, including survey date."""
     with _lock:
         _user_states[phone.lower()] = {
             "phone": phone,
             "state": state,
             "mealName": meal_name,
+            "surveyDate": survey_date,
         }
         _save_states()
 

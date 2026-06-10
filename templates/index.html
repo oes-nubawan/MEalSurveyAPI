@@ -108,7 +108,7 @@
 
       <table>
         <thead>
-          <tr><th>#</th><th>Phone</th><th>Meal</th><th>Rating</th><th>Comment</th><th>Category</th><th>Time (UTC)</th></tr>
+          <tr><th>#</th><th>Phone</th><th>Meal</th><th>Date</th><th>Rating</th><th>Comment</th><th>Category</th><th>Time (UTC)</th></tr>
         </thead>
         <tbody id="responsesBody"></tbody>
       </table>
@@ -235,6 +235,7 @@
             '<td>' + (item.id || (i+1)) + '</td>' +
             '<td>' + escapeHtml(item.phone || '') + '</td>' +
             '<td>' + escapeHtml(item.mealName || '') + '</td>' +
+            '<td>' + escapeHtml(item.surveyDate || '-') + '</td>' +
             '<td><span class="badge badge-' + (item.rating || '') + '">' + formatRating(item.rating) + '</span></td>' +
             '<td>' + escapeHtml(item.comment || '-') + '</td>' +
             '<td>' + escapeHtml(item.commentCategory || '-') + '</td>' +
