@@ -40,7 +40,30 @@ MAX_WEBHOOK_LOG = 20
 
 @app.route("/")
 def index():
-    """Serve the frontend dashboard."""
+    """Serve the frontend dashboard — but intercept WhatsApp verification first.
+    
+    Meta sends the webhook verification to the Callback URL exactly as configured.
+    If someone set the Callback URL to the root (/) instead of /webhook, we still
+    need to handle the verification here.
+    """
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+
+    # If this looks like a webhook verification request, handle it
+    if token and challenge:
+        verify_token = os.environ.get("WHATSAPP_VERIFY_TOKEN", "my_verify_token")
+        print(f"[root] Intercepted webhook verify — mode={mode}, token={token}, challenge={challenge}")
+        if mode == "subscribe" and token == verify_token:
+            print("[root] Verification succeeded")
+            return challenge, 200
+        if token == verify_token and challenge:
+            print("[root] Verification succeeded (no hub.mode)")
+            return challenge, 200
+        print(f"[root] Verification FAILED — token mismatch")
+        return "Forbidden", 403
+
+    # Normal page request — serve the dashboard
     return render_template("index.html")
 
 
@@ -81,9 +104,13 @@ def webhook_verify():
     return "Forbidden — ensure hub.mode=subscribe and hub.verify_token match your WHATSAPP_VERIFY_TOKEN env var", 403
 
 
+@app.route("/", methods=["POST"])
 @app.route("/webhook", methods=["POST"])
 def webhook_receive():
-    """WhatsApp webhook message receiver (POST)."""
+    """WhatsApp webhook message receiver (POST).
+    
+    Handles both / and /webhook paths since Meta sends to the exact Callback URL.
+    """
     body = request.get_json(silent=True) or {}
     print(f"[webhook] POST received")
 
