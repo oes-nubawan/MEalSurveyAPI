@@ -8,8 +8,9 @@ The response_status field in tbl_usersresponse IS the state machine:
   completed → fully done (positive rating OR not_ok + remarks)
 
 Duplicate prevention: ONE row per user per meal_date (UNIQUE constraint).
-After the first "Thank you" response, all further messages are SILENTLY IGNORED.
-No reply = no encouragement to keep tapping.
+After the first "Thank you" response, the user gets ONE "already submitted" reminder
+on their next message, then all further messages are SILENTLY IGNORED.
+No reply after that = no encouragement to keep tapping.
 """
 
 import threading
@@ -56,6 +57,11 @@ RATING_IDS = frozenset({
     "add_comment", "skip_comment",
 })
 
+# ── Phones that already received the "already submitted" reminder ─────
+# Once a user is told "You have already submitted", they go into this set.
+# Any further messages are silently ignored (no reply at all).
+_reminder_sent: set[str] = set()
+
 
 def handle(user: str, input_text: str, wa: WhatsAppService):
     """Main entry point — process an incoming WhatsApp message."""
@@ -97,12 +103,20 @@ def _handle_internal(user_phone: str, input_text: str, wa: WhatsAppService):
         # No pending/rated response — check if they already completed one
         latest = db.get_latest_response_by_phone(user_phone)
         if latest and latest.get("response_status") == "completed":
-            # Already completed — save extra text as remarks (silent), then ignore
+            # Already completed — save extra text as remarks (silent save)
             if latest.get("remarks") is None and input_text not in RATING_IDS and latest.get("user_response") != "not_ok":
                 print(f"[conversation] Saving extra comment from {user_name}: '{input_text}'")
                 db.update_response(user_id, latest["meal_date"], remarks=input_text)
-            print(f"[conversation] User {user_name} already completed. SILENT IGNORE.")
-            return  # No reply after first "Thank you"
+
+            if user_phone not in _reminder_sent:
+                # First extra message → send one reminder, then silence forever
+                _reminder_sent.add(user_phone)
+                print(f"[conversation] User {user_name} already completed. Sending ONE reminder.")
+                wa.send_text(user_phone, "You have already submitted your feedback. Thank you!")
+            else:
+                # Already reminded → silent ignore
+                print(f"[conversation] User {user_name} already completed and reminded. SILENT IGNORE.")
+            return
         # No survey sent to this user at all — also silent
         print(f"[conversation] No active survey for {user_name}. SILENT IGNORE.")
         return
@@ -114,14 +128,22 @@ def _handle_internal(user_phone: str, input_text: str, wa: WhatsAppService):
 
     print(f"[conversation] Active response: date={meal_date}, meal={meal_name}, status={status}, rating={existing_rating}")
 
-    # ── 3. If already completed → SILENT IGNORE ───────────────────
+    # ── 3. If already completed → one reminder, then silent ──────
     if status == "completed":
-        # Save any extra text as remarks (silent save, no reply)
+        # Save any extra text as remarks (silent save)
         if existing_rating != "not_ok" and active.get("remarks") is None and input_text not in RATING_IDS:
             print(f"[conversation] Saving extra comment from {user_name}: '{input_text}'")
             db.update_response(user_id, meal_date, remarks=input_text)
-        print(f"[conversation] User {user_name} already completed for {meal_date}. SILENT IGNORE.")
-        return  # No reply after first "Thank you"
+
+        if user_phone not in _reminder_sent:
+            # First extra message → send one reminder, then silence forever
+            _reminder_sent.add(user_phone)
+            print(f"[conversation] User {user_name} already completed for {meal_date}. Sending ONE reminder.")
+            wa.send_text(user_phone, "You have already submitted your feedback. Thank you!")
+        else:
+            # Already reminded → silent ignore
+            print(f"[conversation] User {user_name} already completed and reminded. SILENT IGNORE.")
+        return
 
     # ── 4. If rated not_ok → waiting for remarks ────────────────────
     if status == "rated" and existing_rating == "not_ok":
