@@ -125,22 +125,17 @@
       <div id="sendStatus"></div>
     </div>
 
-    <!-- Auto-Scheduler Status -->
-    <div class="card" style="padding:16px 24px;">
-      <div class="row" style="align-items:center;margin-bottom:0;">
-        <div style="flex:1;">
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span id="schedulerDot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#16a34a;"></span>
-            <strong style="font-size:0.9rem;">Auto-Scheduler</strong>
-            <span id="schedulerLabel" style="font-size:0.82rem;color:#64748b;">2:30 PM PKT daily</span>
-          </div>
-          <div id="schedulerInfo" style="font-size:0.78rem;color:#94a3b8;margin-top:2px;margin-left:18px;">Loading...</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <button id="schedulerToggleBtn" class="btn-sm" style="min-width:80px;">Disable</button>
-          <button id="schedulerLogsBtn" class="btn-secondary btn-sm">View Logs</button>
-        </div>
+    <!-- Auto-Send (External Cron) -->
+    <div class="card" style="padding:14px 24px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2563eb;"></span>
+        <strong style="font-size:0.88rem;">Auto-Send</strong>
+        <span style="font-size:0.78rem;color:#64748b;">2:30 PM PKT daily via cron-job.org</span>
+        <span style="margin-left:auto;">
+          <button id="schedulerLogsBtn" class="btn-secondary btn-sm" style="padding:4px 10px;font-size:0.75rem;">Logs</button>
+        </span>
       </div>
+      <div id="schedulerInfo" style="font-size:0.75rem;color:#94a3b8;margin-top:3px;margin-left:18px;">Set up cron-job.org → GET https://your-app.onrender.com/api/cron/daily-survey?secret=YOUR_CRON_SECRET</div>
     </div>
 
     <!-- Tabs -->
@@ -256,10 +251,13 @@
     async function onDateChange() {
       await autoFetchMealName();
       loadAvailCount();
-      // Refresh ALL tabs regardless of which is active
-      loadUsers();
-      loadResponses();
-      loadSurveys();
+      // Only refresh the active tab (saves bandwidth)
+      var activeTab = document.querySelector('.tab.active');
+      if (activeTab) {
+        if (activeTab.dataset.tab === 'users') loadUsers();
+        if (activeTab.dataset.tab === 'responses') loadResponses();
+        if (activeTab.dataset.tab === 'surveys') loadSurveys();
+      }
     }
 
     // ── Track holiday state globally ──────────────────────────────
@@ -650,7 +648,7 @@
       var cb = document.getElementById('autoRefresh');
       function toggle() {
         if (refreshInterval) clearInterval(refreshInterval);
-        if (cb.checked) refreshInterval = setInterval(loadResponses, 3000);
+        if (cb.checked) refreshInterval = setInterval(loadResponses, 15000);
       }
       cb.addEventListener('change', toggle);
       toggle();
@@ -675,73 +673,23 @@
       } catch(e) { document.getElementById('debugOutput').textContent = 'Error: ' + e.message; }
     });
 
-    // ── Auto-Scheduler ────────────────────────────────────────────
+    // ── Auto-Send Logs ────────────────────────────────────────────
     async function loadSchedulerStatus() {
       try {
         var r = await fetch('/api/scheduler/status');
         if (!r.ok) return;
         var data = await r.json();
-
-        var dot = document.getElementById('schedulerDot');
-        var label = document.getElementById('schedulerLabel');
         var info = document.getElementById('schedulerInfo');
-        var toggleBtn = document.getElementById('schedulerToggleBtn');
-
-        if (data.enabled && data.running) {
-          dot.style.background = '#16a34a';
-          label.textContent = 'Active — 2:30 PM PKT daily';
-          label.style.color = '#16a34a';
-          toggleBtn.textContent = 'Disable';
-          toggleBtn.className = 'btn-danger btn-sm';
-        } else if (data.running) {
-          dot.style.background = '#f59e0b';
-          label.textContent = 'Paused — 2:30 PM PKT daily';
-          label.style.color = '#f59e0b';
-          toggleBtn.textContent = 'Enable';
-          toggleBtn.className = 'btn-success btn-sm';
-        } else {
-          dot.style.background = '#dc2626';
-          label.textContent = 'Stopped';
-          label.style.color = '#dc2626';
-          toggleBtn.textContent = 'Enable';
-          toggleBtn.className = 'btn-success btn-sm';
-        }
-
-        // Show next run time
-        var nextRun = '';
-        if (data.jobs && data.jobs.length > 0 && data.jobs[0].nextRun) {
-          nextRun = 'Next run: ' + fmtDate(data.jobs[0].nextRun);
-        }
-
-        // Show last run info
         var lastRun = '';
         if (data.lastRun) {
           var lr = data.lastRun;
-          if (lr.status === 'skipped') {
-            lastRun = 'Last: ' + lr.message;
-          } else if (lr.status === 'completed') {
-            lastRun = 'Last: ' + lr.sent + ' sent, ' + lr.skipped + ' skipped on ' + lr.date;
-          } else if (lr.status === 'error') {
-            lastRun = 'Last: Error — ' + lr.message;
-          }
+          if (lr.status === 'skipped') lastRun = 'Last: ' + lr.message;
+          else if (lr.status === 'completed') lastRun = 'Last: ' + lr.sent + ' sent on ' + lr.date;
+          else lastRun = 'Last: ' + (lr.message || lr.status);
         }
-
-        info.textContent = [nextRun, lastRun].filter(Boolean).join(' | ') || 'No runs yet';
-      } catch(e) { console.error(e); }
+        info.textContent = lastRun || 'Set up cron-job.org to call /api/cron/daily-survey?secret=YOUR_CRON_SECRET at 2:30 PM PKT';
+      } catch(e) { /* silent */ }
     }
-
-    document.getElementById('schedulerToggleBtn').addEventListener('click', async function() {
-      var btn = this;
-      var action = btn.textContent.trim().toLowerCase() === 'disable' ? 'disable' : 'enable';
-      try {
-        await fetch('/api/scheduler/toggle', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: action })
-        });
-        loadSchedulerStatus();
-      } catch(e) { console.error(e); }
-    });
 
     document.getElementById('schedulerLogsBtn').addEventListener('click', async function() {
       try {
@@ -750,7 +698,6 @@
         var data = await r.json();
         var output = document.getElementById('debugOutput');
         output.textContent = JSON.stringify(data.logs, null, 2);
-        // Auto-open debug panel
         var debugContent = document.getElementById('debugContent');
         var debugToggle = document.getElementById('debugToggle');
         debugContent.style.display = 'block';
@@ -758,10 +705,8 @@
       } catch(e) { console.error(e); }
     });
 
-    // Load scheduler status on page load
+    // Load scheduler status once (no polling — saves bandwidth)
     loadSchedulerStatus();
-    // Refresh every 30 seconds
-    setInterval(loadSchedulerStatus, 30000);
 
     // Initial load
     loadResponses();

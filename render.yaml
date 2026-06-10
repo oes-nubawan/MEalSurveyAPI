@@ -3,7 +3,7 @@ services:
     name: meal-survey
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120 -c gunicorn.conf.py
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
     envVars:
       - key: WHATSAPP_TOKEN
         sync: false
@@ -22,4 +22,6 @@ services:
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: CRON_SECRET
         sync: false
