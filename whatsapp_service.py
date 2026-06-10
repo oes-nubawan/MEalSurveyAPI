@@ -2,9 +2,9 @@
 WhatsApp Business API service.
 Sends interactive button messages, list messages, templates, and plain text.
 
-PRIMARY survey type: Interactive Buttons (3 options)
-- Buttons disappear after user taps one (prevents duplicate responses)
-- Very Good | Satisfactory | Not Acceptable
+IMPORTANT: WhatsApp does NOT support disabling buttons after they're sent.
+This is a platform limitation — no API exists for it.
+The backend duplicate check is the only protection against multiple taps.
 """
 
 import os
@@ -59,19 +59,18 @@ class WhatsAppService:
         return self._post(payload)
 
     # ── Survey: Interactive Buttons (3 options) ─────────────────────────
-    # PRIMARY survey type — buttons disappear after user taps one.
-    # This prevents duplicate responses naturally.
+    # Buttons stay tappable after user selects one (WhatsApp limitation).
+    # Backend duplicate check prevents multiple submissions.
 
     def send_survey_buttons(self, to: str, meal_name: str):
-        """Send an interactive button message with 3 rating options.
-        Buttons auto-disable after user taps one — no duplicates!"""
+        """Send 3-button survey. Select one only — duplicates are blocked."""
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
             "type": "interactive",
             "interactive": {
                 "type": "button",
-                "body": {"text": f"How was today's meal?\n{meal_name}"},
+                "body": {"text": f"How was today's meal?\n{meal_name}\n\nSelect one option:"},
                 "action": {
                     "buttons": [
                         {"type": "reply", "reply": {"id": "very_good", "title": "Very Good"}},
@@ -86,14 +85,14 @@ class WhatsAppService:
     # ── Survey: Interactive List (4 options) ────────────────────────────
 
     def send_survey_list(self, to: str, meal_name: str):
-        """Send an interactive list message with 4 rating options."""
+        """Send list survey with 4 rating options."""
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
             "type": "interactive",
             "interactive": {
                 "type": "list",
-                "body": {"text": f"How was today's meal?\n{meal_name}"},
+                "body": {"text": f"How was today's meal?\n{meal_name}\n\nSelect one option:"},
                 "action": {
                     "button": "Rate Meal",
                     "sections": [
@@ -143,7 +142,7 @@ class WhatsAppService:
     # ── Default survey ──────────────────────────────────────────────────
 
     def send_survey(self, to: str, meal_name: str, survey_type: str = "button"):
-        """Send a survey by type. Default is button (3 options, auto-disable)."""
+        """Send a survey by type. Default is button (3 options)."""
         if survey_type == "list":
             return self.send_survey_list(to, meal_name)
         elif survey_type == "template":
