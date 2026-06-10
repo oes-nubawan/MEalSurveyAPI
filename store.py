@@ -1,9 +1,14 @@
 """
-JSON file-based storage for feedback entries and user states.
+JSON file-based storage for feedback entries, user states, and surveys.
 Thread-safe with a global lock. Data persists to data/ directory.
 
 Duplicate prevention is date-based: one response per phone per surveyDate.
-A new survey for a different date resets the user and allows a new response.
+A new survey for a different date allows a new response.
+
+Key data:
+- Surveys: batch of surveys sent to multiple phones for a meal+date
+- Feedback: individual user responses linked to surveyDate
+- States: per-phone conversation state machine (SURVEY_SENT, WAITING_COMMENT, etc.)
 """
 
 import json
@@ -16,63 +21,67 @@ from typing import Optional
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 FEEDBACK_FILE = os.path.join(DATA_DIR, "feedback-data.json")
 STATES_FILE = os.path.join(DATA_DIR, "user-states.json")
+SURVEYS_FILE = os.path.join(DATA_DIR, "surveys.json")
 
 _lock = threading.Lock()
 
 # In-memory caches (loaded from disk on startup)
 _feedback_entries: list[dict] = []
 _user_states: dict[str, dict] = {}  # phone (lowercase) -> state dict
+_surveys: list[dict] = []  # list of survey batches
 
 
 def _ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
 
 
-def _load_feedback():
-    global _feedback_entries
+def _load_json(path: str, default):
     try:
-        if os.path.exists(FEEDBACK_FILE):
-            with open(FEEDBACK_FILE, "r") as f:
-                _feedback_entries = json.load(f)
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
     except Exception as e:
-        print(f"[store] Error loading feedback: {e}")
-        _feedback_entries = []
+        print(f"[store] Error loading {path}: {e}")
+    return default
 
 
-def _load_states():
-    global _user_states
+def _save_json(path: str, data):
     try:
-        if os.path.exists(STATES_FILE):
-            with open(STATES_FILE, "r") as f:
-                state_list = json.load(f)
-                _user_states = {s["phone"].lower(): s for s in state_list}
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
     except Exception as e:
-        print(f"[store] Error loading states: {e}")
-        _user_states = {}
-
-
-def _save_feedback():
-    try:
-        with open(FEEDBACK_FILE, "w") as f:
-            json.dump(_feedback_entries, f, indent=2, default=str)
-    except Exception as e:
-        print(f"[store] Error saving feedback: {e}")
-
-
-def _save_states():
-    try:
-        with open(STATES_FILE, "w") as f:
-            json.dump(list(_user_states.values()), f, indent=2, default=str)
-    except Exception as e:
-        print(f"[store] Error saving states: {e}")
+        print(f"[store] Error saving {path}: {e}")
 
 
 def init():
     """Initialize storage — load data from disk."""
+    global _feedback_entries, _user_states, _surveys
     _ensure_data_dir()
-    _load_feedback()
-    _load_states()
-    print(f"[store] Loaded {len(_feedback_entries)} feedback entries, {len(_user_states)} user states")
+    _feedback_entries = _load_json(FEEDBACK_FILE, [])
+    _surveys = _load_json(SURVEYS_FILE, [])
+    state_list = _load_json(STATES_FILE, [])
+    _user_states = {s["phone"].lower(): s for s in state_list}
+    print(f"[store] Loaded {len(_feedback_entries)} feedback, {len(_user_states)} states, {len(_surveys)} surveys")
+
+
+# ── Survey batch operations ────────────────────────────────────────────
+
+def add_survey(survey: dict) -> dict:
+    """Add a survey batch (sent to multiple phones). Auto-increments ID."""
+    with _lock:
+        next_id = max((s.get("id", 0) for s in _surveys), default=0) + 1
+        survey["id"] = next_id
+        if "createdAt" not in survey:
+            survey["createdAt"] = datetime.now(timezone.utc).isoformat()
+        _surveys.append(survey)
+        _save_json(SURVEYS_FILE, _surveys)
+    return survey
+
+
+def get_surveys(count: int = 20) -> list[dict]:
+    """Get recent surveys, newest first."""
+    with _lock:
+        return sorted(_surveys, key=lambda s: s.get("createdAt", ""), reverse=True)[:count]
 
 
 # ── Feedback operations ────────────────────────────────────────────────
@@ -85,7 +94,7 @@ def add_feedback(entry: dict) -> dict:
         if "createdAt" not in entry:
             entry["createdAt"] = datetime.now(timezone.utc).isoformat()
         _feedback_entries.append(entry)
-        _save_feedback()
+        _save_json(FEEDBACK_FILE, _feedback_entries)
     return entry
 
 
@@ -114,8 +123,7 @@ def get_latest_by_phone_and_date(phone: str, survey_date: str) -> Optional[dict]
 def get_recent(count: int = 50) -> list[dict]:
     """Get recent feedback entries, newest first."""
     with _lock:
-        sorted_entries = sorted(_feedback_entries, key=lambda e: e.get("createdAt", ""), reverse=True)
-        return sorted_entries[:count]
+        return sorted(_feedback_entries, key=lambda e: e.get("createdAt", ""), reverse=True)[:count]
 
 
 def update_feedback_comment(phone: str, comment: Optional[str], category: Optional[str]) -> Optional[dict]:
@@ -126,8 +134,17 @@ def update_feedback_comment(phone: str, comment: Optional[str], category: Option
             entry["comment"] = comment
             entry["commentCategory"] = category
             entry["updatedAt"] = datetime.now(timezone.utc).isoformat()
-            _save_feedback()
+            _save_json(FEEDBACK_FILE, _feedback_entries)
         return entry
+
+
+def has_incomplete_not_ok(phone: str, survey_date: str) -> Optional[dict]:
+    """Check if user has a partial not_ok entry (no comment) for a date. Returns the entry or None."""
+    with _lock:
+        entry = get_latest_by_phone_and_date(phone, survey_date)
+        if entry and entry.get("rating") == "not_ok" and entry.get("comment") is None:
+            return entry
+        return None
 
 
 def reset_user(phone: str):
@@ -135,8 +152,8 @@ def reset_user(phone: str):
     with _lock:
         _feedback_entries[:] = [e for e in _feedback_entries if e.get("phone", "").lower() != phone.lower()]
         _user_states.pop(phone.lower(), None)
-        _save_feedback()
-        _save_states()
+        _save_json(FEEDBACK_FILE, _feedback_entries)
+        _save_json(STATES_FILE, list(_user_states.values()))
 
 
 # ── User state operations ──────────────────────────────────────────────
@@ -144,23 +161,34 @@ def reset_user(phone: str):
 def get_state(phone: str) -> Optional[dict]:
     """Get the current state for a phone number."""
     with _lock:
-        return _user_states.get(phone.lower())
+        result = _user_states.get(phone.lower())
+        print(f"[store] get_state('{phone}') -> key='{phone.lower()}' result={result}")
+        return result
 
 
 def set_state(phone: str, state: str, meal_name: str = "", survey_date: str = ""):
     """Set the state for a phone number, including survey date."""
     with _lock:
-        _user_states[phone.lower()] = {
+        state_dict = {
             "phone": phone,
             "state": state,
             "mealName": meal_name,
             "surveyDate": survey_date,
         }
-        _save_states()
+        _user_states[phone.lower()] = state_dict
+        _save_json(STATES_FILE, list(_user_states.values()))
+        print(f"[store] set_state('{phone}', '{state}', meal='{meal_name}', date='{survey_date}') saved")
 
 
 def remove_state(phone: str):
     """Remove the state for a phone number."""
     with _lock:
         _user_states.pop(phone.lower(), None)
-        _save_states()
+        _save_json(STATES_FILE, list(_user_states.values()))
+        print(f"[store] remove_state('{phone}')")
+
+
+def get_all_state_keys() -> list[str]:
+    """Get all phone keys in the state dict (for debugging)."""
+    with _lock:
+        return list(_user_states.keys())

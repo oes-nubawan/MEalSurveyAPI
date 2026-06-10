@@ -36,6 +36,7 @@ class WhatsAppService:
             print(f"[wa] Response: {resp.status_code} {resp.text[:500]}")
             if resp.status_code >= 400:
                 print(f"[wa] ERROR: {resp.status_code} {resp.text}")
+                raise Exception(f"WhatsApp API error {resp.status_code}: {resp.text[:200]}")
             return resp
         except Exception as e:
             print(f"[wa] Request failed: {e}")

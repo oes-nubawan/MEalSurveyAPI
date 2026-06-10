@@ -2,14 +2,14 @@
 Conversation handler — processes incoming WhatsApp messages with a state machine.
 
 Duplicate prevention: DATE-BASED. One response per phone per surveyDate.
-- When a new survey is sent, the survey date is stored in the user's state.
-- The duplicate check looks for existing feedback for that phone + surveyDate.
-- A new survey for a different date allows the user to respond again.
+- Sending a new survey for a different date allows the user to respond again.
+- Same date = "already submitted feedback for today"
 
 Not Acceptable flow:
 - User selects "Not Acceptable" → partial entry saved → WAITING_COMMENT state
 - Next text message from user is captured as their complaint
-- State persisted to JSON so it survives restarts
+- SAFETY NET: If WAITING_COMMENT state is lost (e.g. server restart), we also
+  check for a partial not_ok entry with no comment and treat text as complaint.
 """
 
 import threading
@@ -36,30 +36,20 @@ def _get_phone_lock(phone: str) -> threading.Lock:
 
 
 def _make_key(phone: str, survey_date: str) -> str:
-    """Create a composite key for the completed set: phone::date"""
     return f"{phone.lower()}::{survey_date}"
 
 
 def is_completed_for_date(phone: str, survey_date: str) -> bool:
-    """Check if a phone has already submitted feedback for a specific date."""
     with _completed_lock:
         return _make_key(phone, survey_date) in _completed
 
 
 def mark_completed_for_date(phone: str, survey_date: str):
-    """Mark a phone as having completed feedback for a specific date."""
     with _completed_lock:
         _completed[_make_key(phone, survey_date)] = True
 
 
-def unmark_completed_for_date(phone: str, survey_date: str):
-    """Remove phone+date from completed set (for testing/reset)."""
-    with _completed_lock:
-        _completed.pop(_make_key(phone, survey_date), None)
-
-
 def unmark_all_for_phone(phone: str):
-    """Remove all date entries for a phone (for testing/reset)."""
     with _completed_lock:
         prefix = phone.lower() + "::"
         keys_to_remove = [k for k in _completed if k.startswith(prefix)]
@@ -78,7 +68,6 @@ TEMPLATE_BUTTON_MAP = {
     "Add comment": "add_comment",
 }
 
-
 RATING_DISPLAY = {
     "very_good": "Very Good",
     "good": "Good",
@@ -96,11 +85,17 @@ def handle(user: str, input_text: str, wa: WhatsAppService):
         print("[conversation] Empty user, ignoring")
         return
 
-    print(f"[conversation] Handle: user={user}, input={input_text}")
+    print(f"[conversation] ===== Handle START: user={user}, input='{input_text}' =====")
 
     lock = _get_phone_lock(user)
     with lock:
-        _handle_internal(user, input_text, wa)
+        try:
+            _handle_internal(user, input_text, wa)
+        except Exception as e:
+            print(f"[conversation] EXCEPTION in _handle_internal: {e}")
+            import traceback
+            traceback.print_exc()
+    print(f"[conversation] ===== Handle END: user={user} =====")
 
 
 def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
@@ -109,17 +104,20 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
     state = store.get_state(user)
     survey_date = state.get("surveyDate", "") if state else ""
     meal_name = state.get("mealName", "") if state else ""
-    print(f"[conversation] User state: {state}")
+
+    print(f"[conversation] State: {state}")
+    print(f"[conversation] Parsed: surveyDate='{survey_date}', mealName='{meal_name}'")
+    print(f"[conversation] All state keys: {store.get_all_state_keys()}")
 
     # ══════════════════════════════════════════════════════════════════════
     #  WAITING_COMMENT: user selected "Not Acceptable" and we're waiting
     #  for them to type their complaint.
     # ══════════════════════════════════════════════════════════════════════
     if state and state.get("state") == "WAITING_COMMENT":
+        print(f"[conversation] >>> WAITING_COMMENT state detected for {user}")
         if input_text == "skip_complaint":
             _finalize_not_acceptable(user, survey_date, None, "skipped", wa)
         else:
-            # Any text input is the user's complaint
             _finalize_not_acceptable(user, survey_date, input_text, "free_text", wa)
         return
 
@@ -127,8 +125,8 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
     #  WAITING_TWO_STEP_COMMENT: two-step flow, user chose "Add comment"
     # ══════════════════════════════════════════════════════════════════════
     if state and state.get("state") == "WAITING_TWO_STEP_COMMENT":
+        print(f"[conversation] >>> WAITING_TWO_STEP_COMMENT state detected for {user}")
         if input_text.lower() == "skip" or input_text == "skip_comment":
-            print(f"[conversation] User {user} skipped comment (two-step)")
             mark_completed_for_date(user, survey_date)
             store.remove_state(user)
             wa.send_text(user, "Thank you for your feedback!")
@@ -137,13 +135,25 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
         return
 
     # ══════════════════════════════════════════════════════════════════════
+    #  SAFETY NET: If user sends text and has a partial not_ok entry
+    #  (state was lost due to restart etc.), treat text as complaint.
+    #  This is the fallback that catches the bug where WAITING_COMMENT
+    #  state isn't found.
+    # ══════════════════════════════════════════════════════════════════════
+    if survey_date:
+        incomplete = store.has_incomplete_not_ok(user, survey_date)
+        if incomplete and input_text not in ("very_good", "good", "satisfactory", "not_ok", "ts_not_ok", "ts_very_good", "ts_good", "ts_satisfactory"):
+            print(f"[conversation] >>> SAFETY NET: Found incomplete not_ok for {user} on {survey_date}. Text='{input_text}' treated as complaint.")
+            # Re-set the state and finalize
+            _finalize_not_acceptable(user, survey_date, input_text, "free_text", wa)
+            return
+
+    # ══════════════════════════════════════════════════════════════════════
     #  DATE-BASED DUPLICATE CHECK
-    #  Block if user already responded for this survey date.
-    #  A new survey for a different date will have a different surveyDate.
     # ══════════════════════════════════════════════════════════════════════
     if survey_date:
         if is_completed_for_date(user, survey_date):
-            print(f"[conversation] User {user} already completed feedback for {survey_date}. Ignoring.")
+            print(f"[conversation] User {user} already completed for {survey_date}. Blocking.")
             wa.send_text(user, "You have already submitted your feedback for today. Thank you!")
             return
 
@@ -151,26 +161,15 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
         if existing:
             is_complete = existing.get("rating") != "not_ok" or existing.get("comment") is not None
             if is_complete:
-                print(f"[conversation] User {user} already submitted feedback for {survey_date} (DB). Blocking duplicate.")
+                print(f"[conversation] User {user} has complete feedback for {survey_date} (DB). Blocking.")
                 mark_completed_for_date(user, survey_date)
                 wa.send_text(user, "You have already submitted your feedback for today. Thank you!")
                 return
-            # not_ok with no comment — user is in WAITING_COMMENT flow but state was lost
-            print(f"[conversation] User {user} has incomplete not_ok entry for {survey_date}. Re-sending prompt.")
+            # not_ok with no comment but not in WAITING_COMMENT — re-prompt
+            print(f"[conversation] User {user} has incomplete not_ok for {survey_date}. Re-sending prompt.")
             store.set_state(user, "WAITING_COMMENT", existing.get("mealName", ""), survey_date)
             wa.send_text(user, f"You selected Not Acceptable for {existing.get('mealName', 'the meal')}. Please type your feedback about what went wrong:")
             return
-    else:
-        # No surveyDate in state — check latest feedback regardless of date
-        # This handles legacy entries or messages sent without a prior survey
-        existing = store.get_latest_by_phone(user)
-        if existing:
-            existing_date = existing.get("surveyDate", "")
-            is_complete = existing.get("rating") != "not_ok" or existing.get("comment") is not None
-            if is_complete:
-                print(f"[conversation] User {user} has existing feedback (no surveyDate in state). Blocking.")
-                wa.send_text(user, "You have already submitted your feedback. Thank you!")
-                return
 
     # ══════════════════════════════════════════════════════════════════════
     #  ROUTE INPUT TO HANDLERS
@@ -183,7 +182,7 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
 
     # Two-step positive rating (ts_ prefix)
     if input_text.startswith("ts_"):
-        rating = input_text[3:]  # strip "ts_" prefix
+        rating = input_text[3:]
         _handle_two_step_rating(user, rating, meal_name, survey_date, wa)
         return
 
@@ -192,22 +191,31 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
         _handle_positive_rating(user, input_text, meal_name, survey_date, wa)
         return
 
-    # Two-step add_comment / skip_comment (when not in WAITING state)
+    # Two-step add_comment / skip_comment
     if input_text == "add_comment":
-        print(f"[conversation] User {user} wants to add comment (two-step).")
         store.set_state(user, "WAITING_TWO_STEP_COMMENT", meal_name, survey_date)
         wa.send_text(user, "Please type your comment below:")
         return
 
     if input_text == "skip_comment":
-        print(f"[conversation] User {user} skipped comment (two-step).")
         mark_completed_for_date(user, survey_date)
         store.remove_state(user)
         wa.send_text(user, "Thank you for your feedback!")
         return
 
-    # Unrecognised input
-    print(f"[conversation] User {user} sent unknown input: {input_text}")
+    # Unrecognised input — but check if there's a survey date without feedback
+    # (user might be responding to an old survey where state was lost)
+    if not survey_date:
+        # Try to find a survey date from existing incomplete not_ok entries
+        latest = store.get_latest_by_phone(user)
+        if latest and latest.get("rating") == "not_ok" and latest.get("comment") is None:
+            found_date = latest.get("surveyDate", "")
+            if found_date:
+                print(f"[conversation] >>> LOST STATE RECOVERY: Found incomplete not_ok for {user} on {found_date}. Treating text as complaint.")
+                _finalize_not_acceptable(user, found_date, input_text, "free_text", wa)
+                return
+
+    print(f"[conversation] Unrecognised input from {user}: '{input_text}'")
     wa.send_text(user, "Please choose a rating from the options provided.")
 
 
@@ -217,9 +225,7 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
 
 
 def _handle_positive_rating(user: str, rating: str, meal_name: str, survey_date: str, wa: WhatsAppService):
-    """Positive/neutral rating — save immediately, one-and-done for this date."""
     print(f"[conversation] User {user} rated: {rating} for date: {survey_date}")
-
     entry = {
         "phone": user,
         "mealName": meal_name,
@@ -235,27 +241,32 @@ def _handle_positive_rating(user: str, rating: str, meal_name: str, survey_date:
 
 
 def _handle_not_acceptable(user: str, meal_name: str, survey_date: str, wa: WhatsAppService):
-    """
-    "Not Acceptable" selected — save partial entry, set WAITING_COMMENT state,
-    send a plain text message asking user to type their complaint.
-    """
-    print(f"[conversation] User {user} rated Not Acceptable for date: {survey_date}. Asking for free-text complaint.")
+    print(f"[conversation] User {user} rated Not Acceptable for date: {survey_date}")
 
-    # Save a partial entry — marks the user as having responded for this date
-    entry = {
-        "phone": user,
-        "mealName": meal_name or "the meal",
-        "rating": "not_ok",
-        "comment": None,
-        "commentCategory": None,
-        "surveyDate": survey_date,
-    }
-    store.add_feedback(entry)
+    # Check if there's already a partial not_ok entry for this date
+    existing = store.get_latest_by_phone_and_date(user, survey_date) if survey_date else None
+    if existing and existing.get("rating") == "not_ok" and existing.get("comment") is None:
+        # Already have a partial entry — just re-set state and re-prompt
+        print(f"[conversation] Partial not_ok already exists for {user} on {survey_date}. Re-prompting.")
+    else:
+        # Save a new partial entry
+        entry = {
+            "phone": user,
+            "mealName": meal_name or "the meal",
+            "rating": "not_ok",
+            "comment": None,
+            "commentCategory": None,
+            "surveyDate": survey_date,
+        }
+        store.add_feedback(entry)
 
-    # Set state so we capture the next text message as the complaint
+    # Set state to WAITING_COMMENT — this is critical
     store.set_state(user, "WAITING_COMMENT", meal_name or "the meal", survey_date)
 
-    # Send plain text asking for feedback
+    # Verify the state was saved correctly
+    verify_state = store.get_state(user)
+    print(f"[conversation] VERIFY: State after set = {verify_state}")
+
     try:
         wa.send_text(
             user,
@@ -267,8 +278,7 @@ def _handle_not_acceptable(user: str, meal_name: str, survey_date: str, wa: What
 
 
 def _finalize_not_acceptable(user: str, survey_date: str, complaint_text: Optional[str], category: str, wa: WhatsAppService):
-    """Finalize a Not Acceptable response — update the partial entry with the complaint text."""
-    print(f"[conversation] User {user} finalizing Not Acceptable for {survey_date}. Complaint: {complaint_text or '(skipped)'}")
+    print(f"[conversation] Finalizing Not Acceptable for {user} on {survey_date}. Complaint: {complaint_text or '(skipped)'}")
 
     store.update_feedback_comment(user, complaint_text, category)
     mark_completed_for_date(user, survey_date)
@@ -281,7 +291,6 @@ def _finalize_not_acceptable(user: str, survey_date: str, complaint_text: Option
 
 
 def _handle_two_step_rating(user: str, rating: str, meal_name: str, survey_date: str, wa: WhatsAppService):
-    """Two-step survey positive rating — saves rating, then asks for optional comment."""
     print(f"[conversation] User {user} rated (two-step): {rating} for date: {survey_date}")
 
     entry = {
@@ -307,7 +316,6 @@ def _handle_two_step_rating(user: str, rating: str, meal_name: str, survey_date:
 
 
 def _handle_two_step_comment(user: str, survey_date: str, comment: str, wa: WhatsAppService):
-    """Two-step: save the free-text comment."""
     print(f"[conversation] User {user} adding optional comment: {comment}")
 
     store.update_feedback_comment(user, comment, None)
@@ -323,7 +331,6 @@ def parse_webhook_message(message: dict) -> tuple[str, str]:
     """
     Parse a WhatsApp message dict and extract (from, input).
     Handles: interactive (list_reply, button_reply), button (template quick-reply), text.
-    Returns (phone_number, internal_rating_id_or_text).
     """
     from_number = message.get("from", "")
     msg_type = message.get("type", "")
@@ -333,29 +340,24 @@ def parse_webhook_message(message: dict) -> tuple[str, str]:
 
     if msg_type == "interactive":
         interactive = message.get("interactive", {})
-        # List reply
         list_reply = interactive.get("list_reply")
         if list_reply and "id" in list_reply:
             input_val = list_reply["id"]
             print(f"[conversation] List reply id: {input_val}")
         else:
-            # Button reply (from interactive button messages)
             button_reply = interactive.get("button_reply")
             if button_reply and "id" in button_reply:
                 input_val = button_reply["id"]
                 print(f"[conversation] Button reply id: {input_val}")
             else:
-                print(f"[conversation] Interactive message but no list_reply or button_reply: {interactive}")
+                print(f"[conversation] Interactive but no list_reply/button_reply: {interactive}")
 
     elif msg_type == "button":
-        # Template quick-reply button responses
         button_obj = message.get("button", {})
-        # Try payload first
         input_val = button_obj.get("payload", "")
         if input_val:
             print(f"[conversation] Template button payload: {input_val}")
         else:
-            # Map button text to our IDs
             button_text = button_obj.get("text", "")
             mapped = TEMPLATE_BUTTON_MAP.get(button_text)
             if mapped:
@@ -363,12 +365,12 @@ def parse_webhook_message(message: dict) -> tuple[str, str]:
                 print(f"[conversation] Mapped template button '{button_text}' to {input_val}")
             else:
                 input_val = button_text
-                print(f"[conversation] Using template button text as input: {input_val}")
+                print(f"[conversation] Template button text as input: {input_val}")
 
     elif msg_type == "text":
         text_obj = message.get("text", {})
         input_val = text_obj.get("body", "")
-        print(f"[conversation] Text body: {input_val}")
+        print(f"[conversation] Text body: '{input_val}'")
 
     else:
         print(f"[conversation] Ignoring message type: {msg_type}")
@@ -377,10 +379,7 @@ def parse_webhook_message(message: dict) -> tuple[str, str]:
 
 
 def process_webhook(body: dict, wa: WhatsAppService):
-    """
-    Process a full webhook payload body.
-    Extracts messages and routes them through the conversation handler.
-    """
+    """Process a full webhook payload body."""
     print(f"[conversation] Webhook received")
 
     entries = body.get("entry", [])
@@ -393,7 +392,6 @@ def process_webhook(body: dict, wa: WhatsAppService):
         for change in changes:
             value = change.get("value", {})
 
-            # Skip status updates (delivered, read, etc.)
             if "statuses" in value:
                 print("[conversation] Skipping status update webhook")
                 continue
@@ -409,10 +407,12 @@ def process_webhook(body: dict, wa: WhatsAppService):
                         print("[conversation] Message missing 'from' field")
                         continue
                     if not input_text:
-                        print(f"[conversation] Could not extract input from message: {message}")
+                        print(f"[conversation] Empty input from {from_number}, skipping")
                         continue
 
-                    print(f"[conversation] Parsed: from={from_number}, input={input_text}")
+                    print(f"[conversation] Parsed: from={from_number}, input='{input_text}'")
                     handle(from_number, input_text, wa)
                 except Exception as e:
                     print(f"[conversation] Error processing message: {e}")
+                    import traceback
+                    traceback.print_exc()
