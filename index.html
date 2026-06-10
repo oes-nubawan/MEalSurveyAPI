@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Employee Location Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px; background: #f3f4f6; border-bottom: 1px solid #d1d5db; align-items: flex-end; }
+    .toolbar label { font-size: 0.9rem; margin-bottom: 4px; color: #374151; }
+    .toolbar .field { display: flex; flex-direction: column; min-width: 180px; }
+    .toolbar input, .toolbar select, .toolbar button { padding: 8px 10px; font-size: 0.95rem; border: 1px solid #cbd5e1; border-radius: 6px; }
+    .toolbar button { background: #2563eb; color: white; cursor: pointer; border: none; }
+    .toolbar button:hover { background: #1d4ed8; }
+    #map { height: calc(100vh - 140px); }
+    .status { font-size: 0.92rem; color: #4b5563; }
+    .count-marker { background: #2563eb; border: 2px solid #ffffff; border-radius: 999px; color: #ffffff; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; font-weight: 700; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25); }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div class="field">
+      <label for="fileInput">Upload Excel / CSV</label>
+      <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" />
+    </div>
+    <div class="field">
+      <label for="employeeFilter">Employee ID</label>
+      <select id="employeeFilter"><option value="all">All Employees</option></select>
+    </div>
+    <div class="field">
+      <label for="dateFrom">Date from</label>
+      <input id="dateFrom" type="date" disabled />
+    </div>
+    <div class="field">
+      <label for="dateTo">Date to</label>
+      <input id="dateTo" type="date" disabled />
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button id="renderButton">Render Map</button>
+    </div>
+    <div class="status" id="statusText">Upload a file to visualize employee locations.</div>
+  </div>
+
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="text/javascript" src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script>
+    const map = L.map('map').setView([24.91339, 67.999439], 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const fileInput = document.getElementById('fileInput');
+    const employeeFilter = document.getElementById('employeeFilter');
+    const dateFrom = document.getElementById('dateFrom');
+    const dateTo = document.getElementById('dateTo');
+    const renderButton = document.getElementById('renderButton');
+    const statusText = document.getElementById('statusText');
+
+    let rawData = [];
+    let dateColumn = null;
+    let mapLayerGroup = L.layerGroup().addTo(map);
+    const CLUSTER_RADIUS_METERS = 100;
+
+    fileInput.addEventListener('change', async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      statusText.textContent = 'Loading file...';
+      try {
+        rawData = await parseFile(file);
+        if (!rawData.length) {
+          statusText.textContent = 'No rows found in the file.';
+          return;
+        }
+        prepareFilters(rawData);
+        statusText.textContent = `Loaded ${rawData.length} rows. Choose filters and click Render Map.`;
+      } catch (error) {
+        console.error(error);
+        statusText.textContent = 'Could not parse file. Please use Excel or CSV with columns like EmpId, Latitude, Longitude.';
+      }
+    });
+
+    renderButton.addEventListener('click', () => {
+      if (!rawData.length) {
+        statusText.textContent = 'Upload data first.';
+        return;
+      }
+      renderMap();
+    });
+
+    function parseFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        const name = file.name.toLowerCase();
+
+        reader.onerror = () => reject(reader.error);
+
+        if (name.endsWith('.csv')) {
+          reader.onload = () => {
+            resolve(parseCsv(reader.result));
+          };
+          reader.readAsText(file);
+          return;
+        }
+
+        reader.onload = () => {
+          const data = new Uint8Array(reader.result);
+          const workbook = XLSX.read(data, { type: 'array', cellDates: true, raw: false });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          const rows = XLSX.utils.sheet_to_json(worksheet, { defval: null });
+          resolve(normalizeRows(rows));
+        };
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    function parseCsv(text) {
+      const lines = text.split(/\r?\n/).filter(line => line.trim().length);
+      const header = lines.shift().split(',').map(h => h.trim());
+      const rows = lines.map(line => {
+        const values = line.split(',').map(v => v.trim());
+        const obj = {};
+        header.forEach((name, index) => { obj[name] = values[index] ?? null; });
+        return obj;
+      });
+      return normalizeRows(rows);
+    }
+
+    function normalizeRows(rows) {
+      dateColumn = null;
+      const normalized = [];
+      rows.forEach((row) => {
+        const entry = {};
+        const raw = {};
+        Object.keys(row).forEach((key) => {
+          const normalizedKey = key.trim();
+          raw[normalizedKey] = row[key];
+          const lower = normalizedKey.toLowerCase();
+          if (lower === 'empid' || lower === 'employeeid' || lower === 'id') entry.empId = row[key];
+          if (lower === 'empname' || lower === 'employeename' || lower === 'name') entry.empName = row[key];
+          if (lower === 'latitude' || lower === 'lat') entry.lat = parseFloat(row[key]);
+          if (lower === 'longitude' || lower === 'lon' || lower === 'lng') entry.lng = parseFloat(row[key]);
+          if (!dateColumn && lower.includes('date')) {
+            dateColumn = normalizedKey;
+          }
+        });
+
+        if (dateColumn) {
+          const rawDate = row[dateColumn];
+          entry.date = parseDateValue(rawDate);
+        }
+
+        entry.raw = raw;
+        if (entry.lat != null && entry.lng != null && !Number.isNaN(entry.lat) && !Number.isNaN(entry.lng)) {
+          normalized.push(entry);
+        }
+      });
+      return normalized;
+    }
+
+    function parseDateValue(value) {
+      if (!value && value !== 0) return null;
+      if (value instanceof Date) return isNaN(value.getTime()) ? null : value;
+      if (typeof value === 'number') {
+        const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+        return new Date(excelEpoch.getTime() + value * 24 * 60 * 60 * 1000);
+      }
+      const parsed = new Date(value);
+      return isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    function prepareFilters(data) {
+      const ids = Array.from(new Set(data.map(item => item.empId ?? item.empName ?? 'Unknown'))).sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+      employeeFilter.innerHTML = '<option value="all">All Employees</option>' + ids.map(id => `<option value="${escapeHtml(String(id))}">${escapeHtml(String(id))}</option>`).join('');
+      if (dateColumn) {
+        dateFrom.disabled = false;
+        dateTo.disabled = false;
+      } else {
+        dateFrom.disabled = true;
+        dateTo.disabled = true;
+        dateFrom.value = '';
+        dateTo.value = '';
+      }
+    }
+
+    function escapeHtml(text) {
+      return text.replace(/[&<>"']/g, (tag) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[tag]));
+    }
+
+    function renderMap() {
+      const selectedEmployee = employeeFilter.value;
+      const fromDate = dateFrom.value ? new Date(dateFrom.value + 'T00:00:00') : null;
+      const toDate = dateTo.value ? new Date(dateTo.value + 'T23:59:59') : null;
+
+      const filtered = rawData.filter((row) => {
+        if (selectedEmployee !== 'all' && String(row.empId) !== selectedEmployee && String(row.empName) !== selectedEmployee) {
+          return false;
+        }
+        if (dateColumn && row.date) {
+          if (fromDate && row.date < fromDate) return false;
+          if (toDate && row.date > toDate) return false;
+        }
+        return true;
+      });
+
+      if (!filtered.length) {
+        statusText.textContent = 'No data matches the selected filters.';
+        mapLayerGroup.clearLayers();
+        return;
+      }
+
+      const clusters = clusterPointsByEmployee(filtered, CLUSTER_RADIUS_METERS);
+      mapLayerGroup.clearLayers();
+
+      clusters.forEach((cluster) => {
+        const marker = L.marker([cluster.lat, cluster.lng], {
+          icon: L.divIcon({
+            className: 'count-marker',
+            html: cluster.count > 1 ? cluster.count : '•',
+            iconSize: [34, 34],
+            iconAnchor: [17, 17]
+          })
+        });
+
+        const employeeLabel = cluster.empId != null ? `Employee ID: ${cluster.empId}` : '';
+        const employeeName = cluster.empName ? `<div>Name: ${escapeHtml(String(cluster.empName))}</div>` : '';
+        marker.bindPopup(`<strong>${escapeHtml(employeeLabel)}</strong>${employeeName}<div>Points combined: ${cluster.count}</div><div>Latitude: ${cluster.lat.toFixed(6)}</div><div>Longitude: ${cluster.lng.toFixed(6)}</div>`);
+        marker.addTo(mapLayerGroup);
+      });
+
+      const bounds = mapLayerGroup.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds.pad(0.2));
+      }
+      statusText.textContent = `Rendered ${clusters.length} cluster markers for ${filtered.length} points.`;
+    }
+
+    function clusterPointsByEmployee(points, radiusMeters) {
+      const groups = {};
+      points.forEach((point) => {
+        const key = point.empId != null ? point.empId : point.empName || 'Unknown';
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(point);
+      });
+
+      const clusters = [];
+      Object.entries(groups).forEach(([empKey, group]) => {
+        group.forEach((point) => {
+          let matched = null;
+          for (const cluster of clusters.filter(c => c.empKey === empKey)) {
+            if (distanceMeters(point.lat, point.lng, cluster.lat, cluster.lng) <= radiusMeters) {
+              matched = cluster;
+              break;
+            }
+          }
+          if (matched) {
+            matched.count += 1;
+            matched.lat = (matched.lat * (matched.count - 1) + point.lat) / matched.count;
+            matched.lng = (matched.lng * (matched.count - 1) + point.lng) / matched.count;
+            matched.points.push(point);
+          } else {
+            clusters.push({
+              empKey,
+              empId: point.empId,
+              empName: point.empName,
+              lat: point.lat,
+              lng: point.lng,
+              count: 1,
+              points: [point]
+            });
+          }
+        });
+      });
+      return clusters;
+    }
+
+    function distanceMeters(lat1, lng1, lat2, lng2) {
+      const toRad = (value) => (value * Math.PI) / 180;
+      const R = 6371000;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lng2 - lng1);
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhatsApp Meal Feedback</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 24px; background: #f0f2f5; }
+    .container { max-width: 960px; margin: 0 auto; background: #fff; padding: 28px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+    h1 { margin-top: 0; color: #1e293b; font-size: 1.6rem; }
+    h2 { color: #334155; margin-bottom: 12px; font-size: 1.2rem; }
+    .field { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; color: #374151; font-size: 0.9rem; }
+    input, select { width: 100%; padding: 10px 12px; font-size: 1rem; border: 1px solid #d1d5db; border-radius: 8px; }
+    input:focus, select:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+    .row { display: flex; gap: 12px; }
+    .row .field { flex: 1; }
+    button { padding: 10px 20px; font-size: 1rem; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.15s; }
+    .btn-primary { background: #2563eb; color: #fff; width: 100%; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-secondary { background: #6b7280; color: #fff; }
+    .btn-secondary:hover { background: #4b5563; }
+    .btn-danger { background: #dc2626; color: #fff; }
+    .btn-danger:hover { background: #b91c1c; }
+    .status { margin: 16px 0; color: #0f172a; font-size: 0.95rem; padding: 10px; border-radius: 8px; background: #f0f9ff; border: 1px solid #bae6fd; }
+    .status.error { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+    .responses { margin-top: 32px; border-top: 2px solid #e5e7eb; padding-top: 24px; }
+    .responses table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .responses th, .responses td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #f3f4f6; }
+    .responses th { background: #f9fafb; font-weight: 700; white-space: nowrap; color: #374151; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .responses tr:hover { background: #f9fafb; }
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+    .badge-very_good { background: #dcfce7; color: #166534; }
+    .badge-good { background: #dbeafe; color: #1e40af; }
+    .badge-satisfactory { background: #fef9c3; color: #854d0e; }
+    .badge-not_ok { background: #fee2e2; color: #991b1b; }
+    .actions { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+    .empty-state { text-align: center; padding: 40px; color: #94a3b8; }
+    .survey-info { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; font-size: 0.9rem; color: #0c4a6e; line-height: 1.5; }
+    .survey-info strong { display: block; margin-bottom: 4px; }
+    .reset-row { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+    .reset-row input { flex: 1; }
+    .auto-refresh { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: #64748b; }
+    .auto-refresh input { width: auto; }
+    .debug-panel { margin-top: 24px; border-top: 1px solid #e5e7eb; padding-top: 16px; }
+    .debug-panel pre { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 0.72rem; max-height: 300px; overflow-y: auto; }
+    .debug-toggle { color: #64748b; font-size: 0.85rem; cursor: pointer; }
+    .debug-toggle:hover { color: #334155; }
+    @media (max-width: 640px) {
+      .row { flex-direction: column; gap: 0; }
+      .responses table { font-size: 0.75rem; }
+      .responses th, .responses td { padding: 8px 4px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>WhatsApp Meal Feedback</h1>
+
+    <div class="row">
+      <div class="field">
+        <label for="phone">Phone number</label>
+        <input id="phone" type="text" placeholder="923001234567" />
+      </div>
+      <div class="field">
+        <label for="mealName">Meal name</label>
+        <input id="mealName" type="text" placeholder="Chicken Biryani" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="surveyType">Survey type</label>
+      <select id="surveyType">
+        <option value="list">List (4 options in one message)</option>
+        <option value="template">Template (4 buttons, pre-approved)</option>
+        <option value="button">Buttons (3 quick-tap options)</option>
+        <option value="twostep">Two-Step (rate + optional comment)</option>
+      </select>
+    </div>
+
+    <div id="surveyInfo" class="survey-info">
+      <strong>List Survey</strong>
+      One message with 4 options: Very Good, Good, Satisfactory, Not Acceptable. If "Not Acceptable" is selected, user is asked to type their complaint. Only one response per user.
+    </div>
+
+    <button id="sendButton" class="btn-primary">Send Meal Survey</button>
+
+    <div class="status" id="statusText">Enter details and click send.</div>
+
+    <!-- Recent feedback section -->
+    <div class="responses">
+      <h2>Recent feedback</h2>
+
+      <div class="actions">
+        <button class="btn-secondary" id="refreshButton">Refresh</button>
+        <span style="color:#94a3b8; font-size:0.85rem;" id="feedbackCount"></span>
+        <div class="auto-refresh">
+          <input type="checkbox" id="autoRefresh" checked />
+          <label for="autoRefresh" style="margin:0; font-weight:normal;">Auto-refresh (3s)</label>
+        </div>
+      </div>
+
+      <div class="reset-row">
+        <input id="resetPhone" type="text" placeholder="Phone to reset (testing)" />
+        <button class="btn-danger" id="resetButton">Reset User</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr><th>#</th><th>Phone</th><th>Meal</th><th>Rating</th><th>Comment</th><th>Category</th><th>Time (UTC)</th></tr>
+        </thead>
+        <tbody id="responsesBody"></tbody>
+      </table>
+      <div id="emptyState" class="empty-state" style="display:none;">No feedback yet. Send a survey to get started.</div>
+    </div>
+
+    <!-- Debug panel -->
+    <div class="debug-panel">
+      <span class="debug-toggle" id="debugToggle">[+] Show debug info</span>
+      <div id="debugContent" style="display:none; margin-top:12px;">
+        <button class="btn-secondary" id="debugWebhooks" style="margin-bottom:8px;">Load recent webhooks</button>
+        <pre id="debugOutput">Click the button above to see recent webhook payloads.</pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var statusText = document.getElementById('statusText');
+    var responsesBody = document.getElementById('responsesBody');
+    var emptyState = document.getElementById('emptyState');
+    var feedbackCount = document.getElementById('feedbackCount');
+    var surveyInfo = document.getElementById('surveyInfo');
+    var surveyTypeSelect = document.getElementById('surveyType');
+
+    var surveyDescriptions = {
+      list: { title: 'List Survey', desc: 'One message with 4 options: Very Good, Good, Satisfactory, Not Acceptable. If "Not Acceptable" is selected, user is asked to type their complaint. Only one response per user.' },
+      template: { title: 'Template Survey', desc: 'Uses a pre-approved WhatsApp utility template with 4 quick-reply buttons. Requires template approval in Meta Business Manager.' },
+      button: { title: 'Button Survey (Limited)', desc: '3 quick-tap buttons: Very Good, Satisfactory, Not Acceptable. WhatsApp limits to 3 buttons, so "Good" is missing. Use list or template instead.' },
+      twostep: { title: 'Two-Step Survey', desc: 'Step 1: Pick a rating from a list. Step 2: Optional comment. If "Not Acceptable", user types complaint instead.' }
+    };
+
+    surveyTypeSelect.addEventListener('change', function() {
+      var info = surveyDescriptions[surveyTypeSelect.value];
+      surveyInfo.innerHTML = '<strong>' + info.title + '</strong>' + info.desc;
+    });
+
+    // ── Send survey ────────────────────────────────────────────────────
+    document.getElementById('sendButton').addEventListener('click', async function() {
+      var phone = document.getElementById('phone').value.trim();
+      var mealName = document.getElementById('mealName').value.trim();
+      var surveyType = surveyTypeSelect.value;
+
+      if (!phone || !mealName) {
+        statusText.textContent = 'Phone and meal name are required.';
+        statusText.className = 'status error';
+        return;
+      }
+
+      try {
+        statusText.textContent = 'Sending survey...';
+        statusText.className = 'status';
+        var response = await fetch('/api/survey/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: phone, mealName: mealName, surveyType: surveyType })
+        });
+
+        if (!response.ok) {
+          var error = await response.text();
+          statusText.textContent = 'Send failed: ' + error;
+          statusText.className = 'status error';
+          return;
+        }
+
+        var data = await response.json();
+        statusText.textContent = 'Survey sent to ' + data.phone + ' for ' + data.mealName + ' (' + data.surveyType + ').';
+        statusText.className = 'status';
+        loadResponses();
+      } catch (err) {
+        statusText.textContent = 'Error sending survey: ' + err.message;
+        statusText.className = 'status error';
+        console.error(err);
+      }
+    });
+
+    // ── Refresh responses ──────────────────────────────────────────────
+    document.getElementById('refreshButton').addEventListener('click', loadResponses);
+
+    // ── Reset user ─────────────────────────────────────────────────────
+    document.getElementById('resetButton').addEventListener('click', async function() {
+      var phone = document.getElementById('resetPhone').value.trim();
+      if (!phone) {
+        statusText.textContent = 'Enter a phone number to reset.';
+        statusText.className = 'status error';
+        return;
+      }
+      try {
+        var response = await fetch('/api/ui/reset/' + encodeURIComponent(phone), { method: 'DELETE' });
+        if (!response.ok) { statusText.textContent = 'Reset failed.'; statusText.className = 'status error'; return; }
+        statusText.textContent = 'Reset feedback for ' + phone + '.';
+        statusText.className = 'status';
+        document.getElementById('resetPhone').value = '';
+        loadResponses();
+      } catch (err) {
+        statusText.textContent = 'Error resetting user.';
+        statusText.className = 'status error';
+        console.error(err);
+      }
+    });
+
+    // ── Load and render responses ──────────────────────────────────────
+    var lastCount = -1;
+    async function loadResponses() {
+      try {
+        var response = await fetch('/api/ui/recent');
+        if (!response.ok) {
+          statusText.textContent = 'Unable to load responses. Status: ' + response.status;
+          return;
+        }
+        var data = await response.json();
+        feedbackCount.textContent = data.length + ' entries';
+
+        if (data.length === 0) {
+          responsesBody.innerHTML = '';
+          emptyState.style.display = 'block';
+          return;
+        }
+
+        emptyState.style.display = 'none';
+        var html = '';
+        for (var i = 0; i < data.length; i++) {
+          var item = data[i];
+          html += '<tr>' +
+            '<td>' + (item.id || (i+1)) + '</td>' +
+            '<td>' + escapeHtml(item.phone || '') + '</td>' +
+            '<td>' + escapeHtml(item.mealName || '') + '</td>' +
+            '<td><span class="badge badge-' + (item.rating || '') + '">' + formatRating(item.rating) + '</span></td>' +
+            '<td>' + escapeHtml(item.comment || '-') + '</td>' +
+            '<td>' + escapeHtml(item.commentCategory || '-') + '</td>' +
+            '<td>' + formatDate(item.createdAt) + '</td>' +
+          '</tr>';
+        }
+        responsesBody.innerHTML = html;
+
+        if (data.length !== lastCount) {
+          statusText.textContent = 'Loaded ' + data.length + ' responses.';
+          statusText.className = 'status';
+          lastCount = data.length;
+        }
+      } catch (err) {
+        statusText.textContent = 'Error loading responses: ' + err.message;
+        statusText.className = 'status error';
+        console.error(err);
+      }
+    }
+
+    function formatRating(rating) {
+      var map = { very_good: 'Very Good', good: 'Good', satisfactory: 'Satisfactory', not_ok: 'Not Acceptable' };
+      return map[rating] || rating || '-';
+    }
+
+    function formatDate(dateStr) {
+      if (!dateStr) return '-';
+      try {
+        var d = new Date(dateStr);
+        return d.toLocaleString('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+      } catch (e) { return dateStr; }
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // ── Auto-refresh ───────────────────────────────────────────────────
+    var refreshInterval = null;
+    function setupAutoRefresh() {
+      var checkbox = document.getElementById('autoRefresh');
+      function toggle() {
+        if (checkbox.checked) {
+          refreshInterval = setInterval(loadResponses, 3000);
+        } else if (refreshInterval) {
+          clearInterval(refreshInterval);
+          refreshInterval = null;
+        }
+      }
+      checkbox.addEventListener('change', toggle);
+      toggle();
+    }
+
+    // ── Debug panel ────────────────────────────────────────────────────
+    document.getElementById('debugToggle').addEventListener('click', function() {
+      var content = document.getElementById('debugContent');
+      if (content.style.display === 'none') {
+        content.style.display = 'block';
+        this.textContent = '[-] Hide debug info';
+      } else {
+        content.style.display = 'none';
+        this.textContent = '[+] Show debug info';
+      }
+    });
+
+    document.getElementById('debugWebhooks').addEventListener('click', async function() {
+      try {
+        var response = await fetch('/api/ui/debug/webhooks');
+        var data = await response.json();
+        document.getElementById('debugOutput').textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        document.getElementById('debugOutput').textContent = 'Error: ' + err.message;
+      }
+    });
+
+    // Initial load
+    loadResponses();
+    setupAutoRefresh();
+  </script>
+</body>
+</html>
