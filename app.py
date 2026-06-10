@@ -5,7 +5,7 @@ Key features:
 1. ONE response per user per date (UNIQUE constraint in Supabase)
 2. 3-button WhatsApp survey — buttons disappear after tap (no duplicates!)
 3. "Not Acceptable" → free-text remarks flow
-4. Send surveys only to users with availstatus = true
+4. Send surveys only to users who availed the meal (tbl_mealavail per-date status)
 5. All data in Supabase (no JSON files, no in-memory state loss)
 6. User management from UI
 
@@ -114,16 +114,16 @@ def webhook_receive():
 
 @app.route("/api/survey/send", methods=["POST"])
 def send_survey():
-    """Send a meal survey to all available users.
+    """Send a meal survey to users who availed the meal on the selected date.
 
     Request body:
     {
-        "mealName": "Chicken Biryani",
+        "mealName": "Chicken Biryani",   // optional — auto-fetched from tbl_meal if not provided
         "surveyDate": "2026-06-10",
         "surveyType": "button"   // optional, defaults to "button"
     }
 
-    Sends to ALL users with availstatus = true.
+    Sends to users with availstatus=true in tbl_mealavail for that date.
     Creates a meal entry and pending response rows in Supabase.
     """
     data = request.get_json(silent=True) or {}
@@ -131,16 +131,23 @@ def send_survey():
     survey_type = (data.get("surveyType") or "button").lower()
     survey_date = data.get("surveyDate", "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    if not meal_name:
-        return jsonify({"error": "Meal name is required."}), 400
-
     if not _validate_date(survey_date):
         return jsonify({"error": f"Invalid survey date '{survey_date}'. Use YYYY-MM-DD, not in the future."}), 400
 
-    # Get available users
-    available_users = db.get_available_users()
+    # Auto-fetch meal name from tbl_meal if not provided
+    if not meal_name:
+        meal_entry = db.get_meal_by_date(survey_date)
+        if meal_entry:
+            meal_name = meal_entry.get("meal_name", "")
+            print(f"[survey] Auto-fetched meal name for {survey_date}: {meal_name}")
+    
+    if not meal_name:
+        return jsonify({"error": "Meal name is required. Either provide it or ensure a meal is registered for the selected date."}), 400
+
+    # Get users who availed the meal on this date (from tbl_mealavail)
+    available_users = db.get_available_users_for_date(survey_date)
     if not available_users:
-        return jsonify({"error": "No available users found. Add users with availstatus=true."}), 400
+        return jsonify({"error": "No users have availed the meal for this date. Mark users as availed in the Users tab."}), 400
 
     # Create meal entry
     try:
@@ -237,10 +244,68 @@ def delete_user(user_id):
 
 @app.route("/api/users/available", methods=["GET"])
 def get_available_users():
-    """Get available users (availstatus=true)."""
+    """Get available users (availstatus=true) — master level."""
     try:
         users = db.get_available_users()
         return jsonify(users)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/mealavail/<meal_date>", methods=["GET"])
+def get_mealavail(meal_date):
+    """Get meal availability entries for a specific date (all users)."""
+    try:
+        entries = db.get_mealavail_for_date(meal_date)
+        return jsonify(entries)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/mealavail", methods=["POST"])
+def set_mealavail():
+    """Set a user's meal availability for a specific date."""
+    data = request.get_json(silent=True) or {}
+    meal_date = data.get("mealDate", "").strip()
+    user_id = data.get("userId", "").strip()
+    availstatus = data.get("availstatus", False)
+
+    if not meal_date or not user_id:
+        return jsonify({"error": "mealDate and userId are required."}), 400
+
+    try:
+        result = db.set_mealavail(meal_date, user_id, availstatus)
+        return jsonify(result or {"status": "updated"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/mealavail/bulk", methods=["POST"])
+def set_mealavail_bulk():
+    """Set meal availability for multiple users on a date."""
+    data = request.get_json(silent=True) or {}
+    meal_date = data.get("mealDate", "").strip()
+    user_ids = data.get("userIds", [])
+    availstatus = data.get("availstatus", True)
+
+    if not meal_date or not user_ids:
+        return jsonify({"error": "mealDate and userIds are required."}), 400
+
+    try:
+        count = db.set_mealavail_bulk(meal_date, user_ids, availstatus)
+        return jsonify({"status": "updated", "count": count})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/meal/<meal_date>", methods=["GET"])
+def get_meal_by_date(meal_date):
+    """Get the meal for a specific date."""
+    try:
+        meal = db.get_meal_by_date(meal_date)
+        if meal:
+            return jsonify(meal)
+        return jsonify({"meal_name": None}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

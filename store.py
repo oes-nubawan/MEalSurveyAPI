@@ -157,6 +157,119 @@ class SupabaseStore:
         """Get recent meals."""
         return self._get("tbl_meal", {"select": "*", "order": "meal_date.desc", "limit": str(count)})
 
+    def get_meal_by_date(self, meal_date: str) -> Optional[dict]:
+        """Get the meal for a specific date. Returns the most recent meal entry for that date."""
+        results = self._get("tbl_meal", {
+            "meal_date": f"eq.{meal_date}",
+            "order": "created_at.desc",
+            "limit": "1",
+        })
+        return results[0] if results else None
+
+    # ── Meal Availability (per-user per-date) ──────────────────────
+
+    def get_available_users_for_date(self, meal_date: str) -> list[dict]:
+        """Get users who availed the meal on a specific date (availstatus=true in tbl_mealavail).
+        Also creates rows for any users who don't have an entry yet (defaults to false).
+        Returns user records enriched with their mealavail id and status."""
+        # Get all users
+        all_users = self._get("tbl_users", {"select": "*", "order": "name.asc"})
+        if not all_users:
+            return []
+
+        user_ids = [u["id"] for u in all_users]
+
+        # Get existing mealavail entries for this date
+        existing = self._get("tbl_mealavail", {
+            "meal_date": f"eq.{meal_date}",
+            "user_id": f"in.({','.join(user_ids)})",
+            "select": "*",
+        })
+        existing_map = {e["user_id"]: e for e in existing}
+
+        # Create rows for users who don't have one yet (default availstatus=false)
+        for user in all_users:
+            if user["id"] not in existing_map:
+                try:
+                    result = self._post("tbl_mealavail", {
+                        "meal_date": meal_date,
+                        "user_id": user["id"],
+                        "availstatus": False,
+                    })
+                    if result:
+                        existing_map[user["id"]] = result[0]
+                except Exception as e:
+                    print(f"[store] Error creating mealavail for user {user['id']}: {e}")
+
+        # Return only users with availstatus=true
+        available = []
+        for user in all_users:
+            avail_entry = existing_map.get(user["id"])
+            if avail_entry and avail_entry.get("availstatus"):
+                user["mealavail_id"] = avail_entry["id"]
+                user["mealavail_status"] = True
+                available.append(user)
+
+        return available
+
+    def get_mealavail_for_date(self, meal_date: str) -> list[dict]:
+        """Get all mealavail entries for a date, enriched with user name and phone."""
+        entries = self._get("tbl_mealavail", {
+            "meal_date": f"eq.{meal_date}",
+            "select": "*",
+            "order": "created_at.asc",
+        })
+        if not entries:
+            return []
+
+        # Enrich with user data
+        user_ids = list(set(e["user_id"] for e in entries))
+        users = self._get("tbl_users", {
+            "select": "id,name,phoneno",
+            "id": f"in.({','.join(user_ids)})",
+        })
+        user_map = {u["id"]: u for u in users}
+
+        for e in entries:
+            user = user_map.get(e["user_id"], {})
+            e["name"] = user.get("name", "")
+            e["phoneno"] = user.get("phoneno", "")
+
+        return entries
+
+    def set_mealavail(self, meal_date: str, user_id: str, availstatus: bool) -> Optional[dict]:
+        """Set a user's meal availability for a specific date. Creates row if not exists."""
+        # Try to update existing
+        existing = self._get("tbl_mealavail", {
+            "meal_date": f"eq.{meal_date}",
+            "user_id": f"eq.{user_id}",
+        })
+        if existing:
+            result = self._patch("tbl_mealavail", {"availstatus": availstatus}, {
+                "meal_date": f"eq.{meal_date}",
+                "user_id": f"eq.{user_id}",
+            })
+            return result[0] if result else None
+        else:
+            # Create new entry
+            result = self._post("tbl_mealavail", {
+                "meal_date": meal_date,
+                "user_id": user_id,
+                "availstatus": availstatus,
+            })
+            return result[0] if result else None
+
+    def set_mealavail_bulk(self, meal_date: str, user_ids: list[str], availstatus: bool) -> int:
+        """Set mealavail for multiple users on a date. Returns count of updated/created."""
+        count = 0
+        for uid in user_ids:
+            try:
+                self.set_mealavail(meal_date, uid, availstatus)
+                count += 1
+            except Exception as e:
+                print(f"[store] Error setting mealavail for user {uid}: {e}")
+        return count
+
     # ── Responses ────────────────────────────────────────────────────
 
     def create_response(self, user_id: str, meal_date: str, meal_name: str) -> Optional[dict]:

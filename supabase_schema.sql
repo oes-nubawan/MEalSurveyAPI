@@ -45,10 +45,27 @@ CREATE TABLE IF NOT EXISTS tbl_usersresponse (
 );
 
 -- ═══════════════════════════════════════════════════════════════════════
+--  MEAL AVAILABILITY TABLE (per-user per-date)
+--  Tracks which users availed (had) the meal on a specific date.
+--  Replaces the master-level availstatus on tbl_users for survey targeting.
+-- ═══════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS tbl_mealavail (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    meal_date DATE NOT NULL,
+    user_id UUID NOT NULL REFERENCES tbl_users(id) ON DELETE CASCADE,
+    availstatus BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(meal_date, user_id)
+);
+
+-- ═══════════════════════════════════════════════════════════════════════
 --  INDEXES
 -- ═══════════════════════════════════════════════════════════════════════
 CREATE INDEX IF NOT EXISTS idx_users_phone ON tbl_users(phoneno);
 CREATE INDEX IF NOT EXISTS idx_users_avail ON tbl_users(availstatus);
+CREATE INDEX IF NOT EXISTS idx_mealavail_date ON tbl_mealavail(meal_date);
+CREATE INDEX IF NOT EXISTS idx_mealavail_user_date ON tbl_mealavail(user_id, meal_date);
+CREATE INDEX IF NOT EXISTS idx_mealavail_status ON tbl_mealavail(availstatus);
 CREATE INDEX IF NOT EXISTS idx_response_user_date ON tbl_usersresponse(user_id, meal_date);
 CREATE INDEX IF NOT EXISTS idx_response_status ON tbl_usersresponse(response_status);
 
@@ -58,8 +75,10 @@ CREATE INDEX IF NOT EXISTS idx_response_status ON tbl_usersresponse(response_sta
 ALTER TABLE tbl_meal ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tbl_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tbl_usersresponse ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tbl_mealavail ENABLE ROW LEVEL SECURITY;
 
 -- Allow service_role full access (backend uses service key)
 CREATE POLICY "Service role full access" ON tbl_meal FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Service role full access" ON tbl_users FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Service role full access" ON tbl_usersresponse FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Service role full access" ON tbl_mealavail FOR ALL USING (true) WITH CHECK (true);

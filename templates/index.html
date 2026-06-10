@@ -95,7 +95,8 @@
       <div class="row">
         <div class="field">
           <label for="mealName">Meal Name</label>
-          <input id="mealName" type="text" placeholder="Chicken Biryani" />
+          <input id="mealName" type="text" placeholder="Auto-fetched from meal table or type manually" />
+          <div class="hint">Leave empty to auto-fetch from the meal registered for the selected date.</div>
         </div>
         <div class="field">
           <label for="surveyDate">Survey Date</label>
@@ -115,7 +116,7 @@
         </div>
         <div class="field" style="display:flex;align-items:flex-end;gap:12px;">
           <div>
-            <span class="avail-count" id="availCount">0 available users</span>
+            <span class="avail-count" id="availCount">0 availed users</span>
           </div>
           <button id="sendButton" class="btn-primary" style="flex:1;">Send Survey</button>
         </div>
@@ -160,22 +161,33 @@
 
       <!-- Users Tab -->
       <div id="tab-users" class="tab-content">
-        <div class="inline-form" style="margin-bottom:16px;">
-          <div class="field" style="flex:1;">
+        <div class="row" style="margin-bottom:16px;align-items:flex-end;">
+          <div class="field" style="flex:1;margin-bottom:0;">
+            <label>Avail Date</label>
+            <input id="availDate" type="date" />
+            <div class="hint">Select date to manage per-day meal availability.</div>
+          </div>
+          <div class="field" style="flex:1;margin-bottom:0;">
             <label>Name</label>
             <input id="newUserName" type="text" placeholder="Zayan" />
           </div>
-          <div class="field" style="flex:1;">
+          <div class="field" style="flex:1;margin-bottom:0;">
             <label>Phone</label>
             <input id="newUserPhone" type="text" placeholder="923001234567" />
           </div>
           <button id="addUserBtn" class="btn-primary btn-sm" style="height:38px;">Add User</button>
         </div>
 
+        <div class="actions" style="margin-bottom:12px;">
+          <button class="btn-success btn-sm" id="selectAllAvail">Select All Availed</button>
+          <button class="btn-secondary btn-sm" id="deselectAllAvail">Deselect All</button>
+          <span id="availDateCount" style="color:#64748b;font-size:0.82rem;"></span>
+        </div>
+
         <div style="overflow-x:auto;">
           <table>
             <thead>
-              <tr><th>Name</th><th>Phone</th><th>Availed</th><th>Actions</th></tr>
+              <tr><th>Name</th><th>Phone</th><th>Availed (for date)</th><th>Actions</th></tr>
             </thead>
             <tbody id="usersBody"></tbody>
           </table>
@@ -209,20 +221,46 @@
   <script>
     // ── Set default date ──────────────────────────────────────────────
     var today = new Date();
-    document.getElementById('surveyDate').value = today.getUTCFullYear() + '-' +
+    var todayStr = today.getUTCFullYear() + '-' +
       String(today.getUTCMonth() + 1).padStart(2, '0') + '-' +
       String(today.getUTCDate()).padStart(2, '0');
+    document.getElementById('surveyDate').value = todayStr;
+    document.getElementById('availDate').value = todayStr;
 
-    // ── Load available user count ─────────────────────────────────────
+    // ── Load availed user count for survey date ──────────────────────
     async function loadAvailCount() {
+      var date = document.getElementById('surveyDate').value;
+      if (!date) return;
       try {
-        var r = await fetch('/api/users/available');
+        var r = await fetch('/api/mealavail/' + date);
         if (!r.ok) return;
-        var users = await r.json();
-        document.getElementById('availCount').textContent = users.length + ' available users';
+        var entries = await r.json();
+        var availed = (entries || []).filter(function(e) { return e.availstatus; }).length;
+        document.getElementById('availCount').textContent = availed + ' availed user' + (availed !== 1 ? 's' : '');
       } catch(e) { console.error(e); }
     }
     loadAvailCount();
+
+    // ── Auto-fetch meal name when date changes ──────────────────────
+    document.getElementById('surveyDate').addEventListener('change', function() {
+      loadAvailCount();
+      autoFetchMealName();
+    });
+
+    async function autoFetchMealName() {
+      var date = document.getElementById('surveyDate').value;
+      var nameInput = document.getElementById('mealName');
+      if (!date) return;
+      try {
+        var r = await fetch('/api/meal/' + date);
+        if (!r.ok) return;
+        var data = await r.json();
+        if (data.meal_name && !nameInput.value.trim()) {
+          nameInput.value = data.meal_name;
+        }
+      } catch(e) { console.error(e); }
+    }
+    autoFetchMealName();
 
     // ── Tabs ────────────────────────────────────────────────────────
     document.querySelectorAll('.tab').forEach(function(tab) {
@@ -242,13 +280,12 @@
       var surveyDate = document.getElementById('surveyDate').value;
       var surveyType = document.getElementById('surveyType').value;
 
-      if (!mealName) { showStatus('err', 'Enter a meal name.'); return; }
       if (!surveyDate) { showStatus('err', 'Select a survey date.'); return; }
 
       var btn = this;
       btn.disabled = true;
       btn.textContent = 'Sending...';
-      showStatus('info', 'Sending survey to available users...');
+      showStatus('info', 'Sending survey to availed users...');
 
       try {
         var response = await fetch('/api/survey/send', {
@@ -261,7 +298,7 @@
 
         var html = '<div class="send-results">';
         html += '<strong>' + esc(data.mealName) + '</strong> — ' + esc(data.surveyDate) + '<br>';
-        html += '<span style="color:#64748b;font-size:0.82rem;">Type: ' + esc(data.surveyType) + ' | Total available: ' + data.totalAvailable + '</span><br>';
+        html += '<span style="color:#64748b;font-size:0.82rem;">Type: ' + esc(data.surveyType) + ' | Total availed: ' + data.totalAvailable + '</span><br>';
         (data.sent || []).forEach(function(s) {
           var icon = s.status === 'sent' ? '✓' : '⊘';
           var cls = s.status === 'sent' ? 'ok' : 'fail';
@@ -337,13 +374,30 @@
       } catch (err) { console.error(err); }
     }
 
-    // ── Load Users ──────────────────────────────────────────────────
+    // ── Load Users (with per-date meal avail) ──────────────────────
+    var _mealavailMap = {};  // user_id -> availstatus for selected date
+
     async function loadUsers() {
       try {
-        var response = await fetch('/api/users');
-        if (!response.ok) return;
-        var users = await response.json();
+        var availDate = document.getElementById('availDate').value || todayStr;
+
+        // Fetch all users and mealavail for the date in parallel
+        var [usersRes, availRes] = await Promise.all([
+          fetch('/api/users'),
+          fetch('/api/mealavail/' + availDate)
+        ]);
+        if (!usersRes.ok) return;
+        var users = await usersRes.json();
+        var availEntries = availRes.ok ? await availRes.json() : [];
+
         if (users.error) { document.getElementById('usersBody').innerHTML = '<tr><td colspan="4" style="color:#dc2626;">' + esc(users.error) + '</td></tr>'; return; }
+
+        // Build avail map
+        _mealavailMap = {};
+        (availEntries || []).forEach(function(e) { _mealavailMap[e.user_id] = e.availstatus; });
+
+        var availedCount = Object.values(_mealavailMap).filter(Boolean).length;
+        document.getElementById('availDateCount').textContent = availedCount + ' of ' + users.length + ' availed';
 
         if (users.length === 0) {
           document.getElementById('usersBody').innerHTML = '';
@@ -354,7 +408,7 @@
         document.getElementById('emptyUsers').style.display = 'none';
         var html = '';
         users.forEach(function(u) {
-          var checked = u.availstatus ? 'checked' : '';
+          var checked = _mealavailMap[u.id] ? 'checked' : '';
           html += '<tr>' +
             '<td>' + esc(u.name) + '</td>' +
             '<td>' + esc(u.phoneno) + '</td>' +
@@ -364,23 +418,68 @@
         });
         document.getElementById('usersBody').innerHTML = html;
 
-        // Attach toggle handlers
+        // Attach toggle handlers — save to tbl_mealavail
         document.querySelectorAll('.avail-toggle').forEach(function(el) {
           el.addEventListener('change', async function() {
             var userId = this.dataset.userid;
             var status = this.checked;
+            var date = document.getElementById('availDate').value || todayStr;
             try {
-              await fetch('/api/users/' + userId, {
-                method: 'PATCH',
+              await fetch('/api/mealavail', {
+                method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ availstatus: status })
+                body: JSON.stringify({ mealDate: date, userId: userId, availstatus: status })
               });
+              _mealavailMap[userId] = status;
+              // Update count
+              var cnt = Object.values(_mealavailMap).filter(Boolean).length;
+              document.getElementById('availDateCount').textContent = cnt + ' of ' + users.length + ' availed';
               loadAvailCount();
             } catch(e) { console.error(e); }
           });
         });
       } catch (err) { console.error(err); }
     }
+
+    // ── Avail date change ──────────────────────────────────────────
+    document.getElementById('availDate').addEventListener('change', function() {
+      loadUsers();
+    });
+
+    // ── Select All / Deselect All ───────────────────────────────────
+    document.getElementById('selectAllAvail').addEventListener('click', async function() {
+      var date = document.getElementById('availDate').value || todayStr;
+      var toggles = document.querySelectorAll('.avail-toggle');
+      var userIds = [];
+      toggles.forEach(function(el) { userIds.push(el.dataset.userid); el.checked = true; });
+      if (userIds.length === 0) return;
+      try {
+        await fetch('/api/mealavail/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mealDate: date, userIds: userIds, availstatus: true })
+        });
+        loadUsers();
+        loadAvailCount();
+      } catch(e) { console.error(e); }
+    });
+
+    document.getElementById('deselectAllAvail').addEventListener('click', async function() {
+      var date = document.getElementById('availDate').value || todayStr;
+      var toggles = document.querySelectorAll('.avail-toggle');
+      var userIds = [];
+      toggles.forEach(function(el) { userIds.push(el.dataset.userid); el.checked = false; });
+      if (userIds.length === 0) return;
+      try {
+        await fetch('/api/mealavail/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mealDate: date, userIds: userIds, availstatus: false })
+        });
+        loadUsers();
+        loadAvailCount();
+      } catch(e) { console.error(e); }
+    });
 
     // ── Add User ────────────────────────────────────────────────────
     document.getElementById('addUserBtn').addEventListener('click', async function() {
@@ -405,7 +504,7 @@
 
     // ── Delete User ─────────────────────────────────────────────────
     window.deleteUser = async function(userId, userName) {
-      if (!confirm('Delete ' + userName + '? This will also delete their responses.')) return;
+      if (!confirm('Delete ' + userName + '? This will also delete their responses and availability records.')) return;
       try {
         await fetch('/api/users/' + userId, { method: 'DELETE' });
         loadUsers();
