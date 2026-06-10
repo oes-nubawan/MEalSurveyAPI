@@ -1,8 +1,10 @@
 """
 Conversation handler — processes incoming WhatsApp messages with a state machine.
 
-Duplicate prevention: DATE-BASED. One response per phone per surveyDate.
-- Sending a new survey for a different date allows the user to respond again.
+Duplicate prevention: ONE response per phone per surveyDate.
+- If user already has complete feedback for a date, block with "already submitted"
+- If survey_date is lost (worker restart), recover from database
+- A new survey for a different date allows a new response
 - Same date = "already submitted feedback for today"
 
 Not Acceptable flow:
@@ -105,11 +107,25 @@ def handle(user: str, input_text: str, wa: WhatsAppService):
     print(f"[conversation] ===== Handle END: user={user} =====")
 
 
+def _is_feedback_complete(entry: dict) -> bool:
+    """Check if a feedback entry is complete (no further action needed)."""
+    if not entry:
+        return False
+    rating = entry.get("rating", "")
+    comment = entry.get("comment")
+    # Positive ratings are always complete (comment is None by design)
+    if rating in ("very_good", "good", "satisfactory"):
+        return True
+    # not_ok is complete only if it has a comment (or was skipped)
+    if rating == "not_ok":
+        return comment is not None
+    return False
+
+
 def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
     """Internal handler — runs under per-phone lock."""
 
     # ── CRITICAL: Recover from worker restart ──
-    # If in-memory caches are empty, try reloading from disk
     store.reload_if_empty()
 
     state = store.get_state(user)
@@ -147,11 +163,7 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
 
     # ══════════════════════════════════════════════════════════════════════
     #  SAFETY NET: State was lost but DB has partial not_ok entry.
-    #  This catches the case where:
-    #  1. User selected "Not Acceptable" → partial entry saved in DB
-    #  2. Worker crashed/restarted → in-memory state wiped
-    #  3. User types complaint text → no WAITING_COMMENT state found
-    #  We recover by checking the database for incomplete entries.
+    #  User types free text → we catch it as their complaint.
     # ══════════════════════════════════════════════════════════════════════
     if input_text not in RATING_IDS:
         # Check with survey date if we have it
@@ -169,25 +181,27 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
             found_meal = any_incomplete.get("mealName", "")
             if found_date:
                 print(f"[conversation] >>> SAFETY NET (no state, DB recovery): Found incomplete not_ok for {user} on {found_date}. Text='{input_text}' treated as complaint.")
-                # Restore state first so finalize works correctly
                 store.set_state(user, "WAITING_COMMENT", found_meal, found_date)
                 _finalize_not_acceptable(user, found_date, input_text, "free_text", wa)
                 return
 
     # ══════════════════════════════════════════════════════════════════════
-    #  DATE-BASED DUPLICATE CHECK
+    #  DUPLICATE CHECK — ALWAYS check DB, even without survey_date
+    #  This is the most important check. One response per phone per date.
+    #  If state was lost, recover the survey_date from existing entries.
     # ══════════════════════════════════════════════════════════════════════
+
+    # Step 1: If we have a survey_date, check by date (normal path)
     if survey_date:
         if is_completed_for_date(user, survey_date):
-            print(f"[conversation] User {user} already completed for {survey_date}. Blocking.")
+            print(f"[conversation] DUPLICATE BLOCK (in-memory): User {user} already completed for {survey_date}.")
             wa.send_text(user, "You have already submitted your feedback for today. Thank you!")
             return
 
         existing = store.get_latest_by_phone_and_date(user, survey_date)
         if existing:
-            is_complete = existing.get("rating") != "not_ok" or existing.get("comment") is not None
-            if is_complete:
-                print(f"[conversation] User {user} has complete feedback for {survey_date} (DB). Blocking.")
+            if _is_feedback_complete(existing):
+                print(f"[conversation] DUPLICATE BLOCK (DB with date): User {user} has complete feedback for {survey_date}.")
                 mark_completed_for_date(user, survey_date)
                 wa.send_text(user, "You have already submitted your feedback for today. Thank you!")
                 return
@@ -196,6 +210,29 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
             store.set_state(user, "WAITING_COMMENT", existing.get("mealName", ""), survey_date)
             wa.send_text(user, f"You selected Not Acceptable for {existing.get('mealName', 'the meal')}. Please type your feedback about what went wrong:")
             return
+
+    # Step 2: NO survey_date (state was lost) — check ALL existing feedback
+    # If user has ANY complete feedback entry, they already responded.
+    # We recover the survey_date from the latest entry.
+    else:
+        latest = store.get_latest_by_phone(user)
+        if latest:
+            recovered_date = latest.get("surveyDate", "")
+            if _is_feedback_complete(latest):
+                print(f"[conversation] DUPLICATE BLOCK (DB no state): User {user} has complete feedback (date={recovered_date}). Blocking.")
+                if recovered_date:
+                    mark_completed_for_date(user, recovered_date)
+                wa.send_text(user, "You have already submitted your feedback for today. Thank you!")
+                return
+            # Has incomplete not_ok — recover the date and re-prompt
+            if latest.get("rating") == "not_ok" and latest.get("comment") is None:
+                print(f"[conversation] RECOVERY: User {user} has incomplete not_ok (date={recovered_date}). Recovering state and re-prompting.")
+                if recovered_date:
+                    store.set_state(user, "WAITING_COMMENT", latest.get("mealName", ""), recovered_date)
+                    wa.send_text(user, f"You selected Not Acceptable for {latest.get('mealName', 'the meal')}. Please type your feedback about what went wrong:")
+                else:
+                    wa.send_text(user, "You have already submitted your feedback. Thank you!")
+                return
 
     # ══════════════════════════════════════════════════════════════════════
     #  ROUTE INPUT TO HANDLERS
@@ -231,7 +268,6 @@ def _handle_internal(user: str, input_text: str, wa: WhatsAppService):
 
     # ══════════════════════════════════════════════════════════════════════
     #  LAST RESORT: Unrecognised input — check DB for any incomplete entry
-    #  (This catches cases where ALL state was lost after worker restart)
     # ══════════════════════════════════════════════════════════════════════
     if input_text not in RATING_IDS:
         any_incomplete = store.has_any_incomplete_not_ok(user)
@@ -289,12 +325,8 @@ def _handle_not_acceptable(user: str, meal_name: str, survey_date: str, wa: What
         }
         store.add_feedback(entry)
 
-    # Set state to WAITING_COMMENT — this is critical
+    # Set state to WAITING_COMMENT
     store.set_state(user, "WAITING_COMMENT", meal_name or "the meal", survey_date)
-
-    # Verify the state was saved correctly
-    verify_state = store.get_state(user)
-    print(f"[conversation] VERIFY: State after set = {verify_state}")
 
     try:
         wa.send_text(
