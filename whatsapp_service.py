@@ -1,6 +1,10 @@
 """
 WhatsApp Business API service.
-Sends interactive list messages, button messages, templates, and plain text.
+Sends interactive button messages, list messages, templates, and plain text.
+
+PRIMARY survey type: Interactive Buttons (3 options)
+- Buttons disappear after user taps one (prevents duplicate responses)
+- Very Good | Satisfactory | Not Acceptable
 """
 
 import os
@@ -54,8 +58,32 @@ class WhatsAppService:
         }
         return self._post(payload)
 
+    # ── Survey: Interactive Buttons (3 options) ─────────────────────────
+    # PRIMARY survey type — buttons disappear after user taps one.
+    # This prevents duplicate responses naturally.
+
+    def send_survey_buttons(self, to: str, meal_name: str):
+        """Send an interactive button message with 3 rating options.
+        Buttons auto-disable after user taps one — no duplicates!"""
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": f"How was today's meal?\n{meal_name}"},
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": "very_good", "title": "Very Good"}},
+                        {"type": "reply", "reply": {"id": "satisfactory", "title": "Satisfactory"}},
+                        {"type": "reply", "reply": {"id": "not_ok", "title": "Not Acceptable"}},
+                    ]
+                },
+            },
+        }
+        return self._post(payload)
+
     # ── Survey: Interactive List (4 options) ────────────────────────────
-    # This is the PRIMARY survey type — supports all 4 ratings.
 
     def send_survey_list(self, to: str, meal_name: str):
         """Send an interactive list message with 4 rating options."""
@@ -76,57 +104,6 @@ class WhatsAppService:
                                 {"id": "good", "title": "Good"},
                                 {"id": "satisfactory", "title": "Satisfactory"},
                                 {"id": "not_ok", "title": "Not Acceptable"},
-                            ],
-                        }
-                    ],
-                },
-            },
-        }
-        return self._post(payload)
-
-    # ── Survey: Interactive Buttons (max 3) ─────────────────────────────
-
-    def send_survey_buttons(self, to: str, meal_name: str):
-        """Send button message with 3 options (WhatsApp limit). Good is excluded."""
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "interactive",
-            "interactive": {
-                "type": "button",
-                "body": {"text": f"How was today's meal?\n{meal_name}"},
-                "action": {
-                    "buttons": [
-                        {"type": "reply", "reply": {"id": "very_good", "title": "Very Good"}},
-                        {"type": "reply", "reply": {"id": "satisfactory", "title": "Satisfactory"}},
-                        {"type": "reply", "reply": {"id": "not_ok", "title": "Not Acceptable"}},
-                    ]
-                },
-            },
-        }
-        return self._post(payload)
-
-    # ── Survey: Two-Step (rate then optional comment) ───────────────────
-
-    def send_survey_two_step(self, to: str, meal_name: str):
-        """Send a two-step list survey."""
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": to,
-            "type": "interactive",
-            "interactive": {
-                "type": "list",
-                "body": {"text": f"Rate today's meal: {meal_name}\nStep 1 of 2 - Choose a rating"},
-                "action": {
-                    "button": "Rate Meal",
-                    "sections": [
-                        {
-                            "title": "Rate the meal",
-                            "rows": [
-                                {"id": "ts_very_good", "title": "Very Good"},
-                                {"id": "ts_good", "title": "Good"},
-                                {"id": "ts_satisfactory", "title": "Satisfactory"},
-                                {"id": "ts_not_ok", "title": "Not Acceptable"},
                             ],
                         }
                     ],
@@ -163,15 +140,13 @@ class WhatsAppService:
         }
         return self._post(payload)
 
-    # ── Default survey (list) ──────────────────────────────────────────
+    # ── Default survey ──────────────────────────────────────────────────
 
-    def send_survey(self, to: str, meal_name: str, survey_type: str = "list"):
-        """Send a survey by type."""
-        if survey_type == "button":
-            return self.send_survey_buttons(to, meal_name)
-        elif survey_type == "twostep":
-            return self.send_survey_two_step(to, meal_name)
+    def send_survey(self, to: str, meal_name: str, survey_type: str = "button"):
+        """Send a survey by type. Default is button (3 options, auto-disable)."""
+        if survey_type == "list":
+            return self.send_survey_list(to, meal_name)
         elif survey_type == "template":
             return self.send_survey_template(to, meal_name)
         else:
-            return self.send_survey_list(to, meal_name)
+            return self.send_survey_buttons(to, meal_name)

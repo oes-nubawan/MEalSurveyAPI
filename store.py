@@ -1,240 +1,409 @@
 """
-JSON file-based storage for feedback entries, user states, and surveys.
+Supabase-backed storage for meal survey application.
+Uses PostgREST API directly (no extra SDK needed).
 
-Thread-safe with a REENTRANT lock (RLock). Data persists to data/ directory.
-Uses atomic writes to prevent corruption on worker crashes.
+Tables:
+- tbl_meal: meals served (meal_date, meal_name)
+- tbl_users: registered users (name, phoneno, availstatus)
+- tbl_usersresponse: user responses — ONE row per user per date
+  response_status flow: pending → rated → completed
 
-Duplicate prevention is date-based: one response per phone per surveyDate.
-A new survey for a different date allows a new response.
-
-Key data:
-- Surveys: batch of surveys sent to multiple phones for a meal+date
-- Feedback: individual user responses linked to surveyDate
-- States: per-phone conversation state machine (SURVEY_SENT, WAITING_COMMENT, etc.)
+The database IS the state machine. No in-memory state needed.
 """
 
-import json
 import os
-import threading
-import tempfile
+import requests
 from datetime import datetime, timezone
 from typing import Optional
 
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-FEEDBACK_FILE = os.path.join(DATA_DIR, "feedback-data.json")
-STATES_FILE = os.path.join(DATA_DIR, "user-states.json")
-SURVEYS_FILE = os.path.join(DATA_DIR, "surveys.json")
+class SupabaseStore:
+    def __init__(self):
+        self.url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+        self.key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        self._headers = {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        }
 
-# Use RLock (reentrant) so nested calls within the same thread don't deadlock
-_lock = threading.RLock()
-
-# In-memory caches (loaded from disk on startup)
-_feedback_entries: list[dict] = []
-_user_states: dict[str, dict] = {}  # phone (lowercase) -> state dict
-_surveys: list[dict] = []  # list of survey batches
-
-
-def _ensure_data_dir():
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-
-def _load_json(path: str, default):
-    try:
-        if os.path.exists(path):
-            with open(path, "r") as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"[store] Error loading {path}: {e}")
-    return default
-
-
-def _atomic_save_json(path: str, data):
-    """Write JSON atomically using temp file + rename to prevent corruption."""
-    try:
-        _ensure_data_dir()
-        dir_name = os.path.dirname(path)
-        # Write to temp file first
-        fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    def _get(self, table: str, params=None) -> list[dict]:
+        url = f"{self.url}/rest/v1/{table}"
         try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(data, f, indent=2, default=str)
-                f.flush()
-                os.fsync(f.fileno())
-            # Atomic rename
-            os.replace(tmp_path, path)
-        except Exception:
-            # Clean up temp file on error
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            resp = requests.get(url, headers=self._headers, params=params, timeout=10)
+            if resp.status_code >= 400:
+                print(f"[store] GET {table} error {resp.status_code}: {resp.text[:200]}")
+                return []
+            return resp.json() if resp.text else []
+        except Exception as e:
+            print(f"[store] GET {table} exception: {e}")
+            return []
+
+    def _post(self, table: str, data: dict) -> list[dict]:
+        url = f"{self.url}/rest/v1/{table}"
+        try:
+            resp = requests.post(url, headers=self._headers, json=data, timeout=10)
+            if resp.status_code >= 400:
+                print(f"[store] POST {table} error {resp.status_code}: {resp.text[:200]}")
+                raise Exception(f"Supabase insert error: {resp.text[:200]}")
+            return resp.json() if resp.text else []
+        except Exception as e:
+            if "Supabase" in str(e):
+                raise
+            print(f"[store] POST {table} exception: {e}")
             raise
-    except Exception as e:
-        print(f"[store] Error saving {path}: {e}")
 
+    def _patch(self, table: str, data: dict, params=None) -> list[dict]:
+        url = f"{self.url}/rest/v1/{table}"
+        try:
+            resp = requests.patch(url, headers=self._headers, json=data, params=params, timeout=10)
+            if resp.status_code >= 400:
+                print(f"[store] PATCH {table} error {resp.status_code}: {resp.text[:200]}")
+                raise Exception(f"Supabase update error: {resp.text[:200]}")
+            return resp.json() if resp.text else []
+        except Exception as e:
+            if "Supabase" in str(e):
+                raise
+            print(f"[store] PATCH {table} exception: {e}")
+            raise
 
-def init():
-    """Initialize storage — load data from disk."""
-    global _feedback_entries, _user_states, _surveys
-    _ensure_data_dir()
-    _feedback_entries = _load_json(FEEDBACK_FILE, [])
-    _surveys = _load_json(SURVEYS_FILE, [])
-    state_list = _load_json(STATES_FILE, [])
-    _user_states = {s["phone"].lower(): s for s in state_list}
-    print(f"[store] Loaded {len(_feedback_entries)} feedback, {len(_user_states)} states, {len(_surveys)} surveys")
+    def _delete(self, table: str, params=None) -> list[dict]:
+        url = f"{self.url}/rest/v1/{table}"
+        try:
+            resp = requests.delete(url, headers=self._headers, params=params, timeout=10)
+            if resp.status_code >= 400:
+                print(f"[store] DELETE {table} error {resp.status_code}: {resp.text[:200]}")
+                raise Exception(f"Supabase delete error: {resp.text[:200]}")
+            return resp.json() if resp.text else []
+        except Exception as e:
+            if "Supabase" in str(e):
+                raise
+            print(f"[store] DELETE {table} exception: {e}")
+            raise
 
+    # ── Init ────────────────────────────────────────────────────────
 
-def reload_if_empty():
-    """Reload data from disk if in-memory caches are empty (worker restart recovery)."""
-    if not _feedback_entries and not _user_states:
-        print("[store] In-memory caches empty, reloading from disk...")
-        init()
+    def init(self):
+        """Verify Supabase connection."""
+        if not self.url or not self.key:
+            raise Exception(
+                "SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables are required. "
+                "Set them in Render dashboard."
+            )
+        try:
+            self._get("tbl_users", {"select": "id", "limit": "1"})
+            print(f"[store] Supabase connected: {self.url}")
+        except Exception as e:
+            print(f"[store] Supabase connection FAILED: {e}")
 
+    def reload_if_empty(self):
+        """No-op — Supabase data is always in the database."""
+        pass
 
-# ── Survey batch operations ────────────────────────────────────────────
+    # ── Users ────────────────────────────────────────────────────────
 
-def add_survey(survey: dict) -> dict:
-    """Add a survey batch (sent to multiple phones). Auto-increments ID."""
-    with _lock:
-        next_id = max((s.get("id", 0) for s in _surveys), default=0) + 1
-        survey["id"] = next_id
-        if "createdAt" not in survey:
-            survey["createdAt"] = datetime.now(timezone.utc).isoformat()
-        _surveys.append(survey)
-        _atomic_save_json(SURVEYS_FILE, _surveys)
-    return survey
+    def get_user_by_phone(self, phone: str) -> Optional[dict]:
+        """Find a user by phone number."""
+        clean = phone.strip().replace("+", "").replace(" ", "")
+        results = self._get("tbl_users", {"phoneno": f"eq.{clean}", "select": "*"})
+        return results[0] if results else None
 
+    def get_available_users(self) -> list[dict]:
+        """Get all users where availstatus = true."""
+        return self._get("tbl_users", {"availstatus": "eq.true", "select": "*", "order": "name.asc"})
 
-def get_surveys(count: int = 20) -> list[dict]:
-    """Get recent surveys, newest first."""
-    with _lock:
-        return sorted(_surveys, key=lambda s: s.get("createdAt", ""), reverse=True)[:count]
+    def get_all_users(self) -> list[dict]:
+        """Get all users."""
+        return self._get("tbl_users", {"select": "*", "order": "name.asc"})
 
+    def add_user(self, name: str, phoneno: str, availstatus: bool = True) -> dict:
+        """Add a new user."""
+        clean = phoneno.strip().replace("+", "").replace(" ", "")
+        result = self._post("tbl_users", {
+            "name": name,
+            "phoneno": clean,
+            "availstatus": availstatus,
+        })
+        return result[0] if result else {}
 
-# ── Feedback operations ────────────────────────────────────────────────
+    def update_user(self, user_id: str, **kwargs) -> dict:
+        """Update a user (name, phoneno, availstatus)."""
+        result = self._patch("tbl_users", kwargs, {"id": f"eq.{user_id}"})
+        return result[0] if result else {}
 
-def add_feedback(entry: dict) -> dict:
-    """Add a feedback entry. Auto-increments ID. Returns the entry with ID."""
-    with _lock:
-        next_id = max((e.get("id", 0) for e in _feedback_entries), default=0) + 1
-        entry["id"] = next_id
-        if "createdAt" not in entry:
-            entry["createdAt"] = datetime.now(timezone.utc).isoformat()
-        _feedback_entries.append(entry)
-        _atomic_save_json(FEEDBACK_FILE, _feedback_entries)
-    return entry
+    def delete_user(self, user_id: str):
+        """Delete a user (cascades to responses)."""
+        self._delete("tbl_users", {"id": f"eq.{user_id}"})
 
+    # ── Meals ────────────────────────────────────────────────────────
 
-def get_latest_by_phone(phone: str) -> Optional[dict]:
-    """Get the most recent feedback entry for a phone number (any date)."""
-    # No lock needed — reads are safe with RLock held by caller, or standalone
-    matches = [e for e in _feedback_entries if e.get("phone", "").lower() == phone.lower()]
-    if not matches:
-        return None
-    return max(matches, key=lambda e: e.get("createdAt", ""))
+    def add_meal(self, meal_date: str, meal_name: str) -> dict:
+        """Add a meal. Returns existing if duplicate."""
+        # Check if already exists
+        existing = self._get("tbl_meal", {
+            "meal_date": f"eq.{meal_date}",
+            "meal_name": f"eq.{meal_name}",
+        })
+        if existing:
+            return existing[0]
+        result = self._post("tbl_meal", {
+            "meal_date": meal_date,
+            "meal_name": meal_name,
+        })
+        return result[0] if result else {}
 
+    def get_meals(self, count: int = 20) -> list[dict]:
+        """Get recent meals."""
+        return self._get("tbl_meal", {"select": "*", "order": "meal_date.desc", "limit": str(count)})
 
-def get_latest_by_phone_and_date(phone: str, survey_date: str) -> Optional[dict]:
-    """Get the most recent feedback entry for a phone number on a specific survey date."""
-    matches = [
-        e for e in _feedback_entries
-        if e.get("phone", "").lower() == phone.lower()
-        and e.get("surveyDate") == survey_date
-    ]
-    if not matches:
-        return None
-    return max(matches, key=lambda e: e.get("createdAt", ""))
+    # ── Responses ────────────────────────────────────────────────────
 
+    def create_response(self, user_id: str, meal_date: str, meal_name: str) -> Optional[dict]:
+        """Create a pending response. Returns None if already exists (duplicate)."""
+        # Check existing first to avoid UNIQUE constraint violation
+        existing = self._get("tbl_usersresponse", {
+            "user_id": f"eq.{user_id}",
+            "meal_date": f"eq.{meal_date}",
+        })
+        if existing:
+            return None  # Already has a response for this date
+        try:
+            result = self._post("tbl_usersresponse", {
+                "user_id": user_id,
+                "meal_date": meal_date,
+                "meal_name": meal_name,
+                "response_status": "pending",
+            })
+            return result[0] if result else None
+        except Exception as e:
+            if "duplicate" in str(e).lower() or "unique" in str(e).lower() or "409" in str(e):
+                return None
+            raise
 
-def get_recent(count: int = 50) -> list[dict]:
-    """Get recent feedback entries, newest first."""
-    with _lock:
-        return sorted(_feedback_entries, key=lambda e: e.get("createdAt", ""), reverse=True)[:count]
+    def get_active_response(self, user_id: str) -> Optional[dict]:
+        """Get the active (pending or rated) response for a user. Most recent first."""
+        results = self._get("tbl_usersresponse", {
+            "user_id": f"eq.{user_id}",
+            "response_status": "in.(pending,rated)",
+            "order": "meal_date.desc",
+            "limit": "1",
+        })
+        return results[0] if results else None
 
+    def get_response_by_user_and_date(self, user_id: str, meal_date: str) -> Optional[dict]:
+        """Get a specific response."""
+        results = self._get("tbl_usersresponse", {
+            "user_id": f"eq.{user_id}",
+            "meal_date": f"eq.{meal_date}",
+        })
+        return results[0] if results else None
 
-def update_feedback_comment(phone: str, comment: Optional[str], category: Optional[str]) -> Optional[dict]:
-    """Update the comment on the latest feedback for a phone. Returns the updated entry."""
-    with _lock:
-        # Use internal read functions directly (already under _lock via RLock)
-        matches = [e for e in _feedback_entries if e.get("phone", "").lower() == phone.lower()]
-        if not matches:
-            print(f"[store] update_feedback_comment: No feedback found for {phone}")
+    def get_latest_response_by_phone(self, phone: str) -> Optional[dict]:
+        """Get the latest response for a phone number (any status)."""
+        user = self.get_user_by_phone(phone)
+        if not user:
             return None
-        entry = max(matches, key=lambda e: e.get("createdAt", ""))
-        entry["comment"] = comment
-        entry["commentCategory"] = category
-        entry["updatedAt"] = datetime.now(timezone.utc).isoformat()
-        _atomic_save_json(FEEDBACK_FILE, _feedback_entries)
-    return entry
+        results = self._get("tbl_usersresponse", {
+            "user_id": f"eq.{user['id']}",
+            "order": "meal_date.desc",
+            "limit": "1",
+        })
+        return results[0] if results else None
 
+    def update_response(self, user_id: str, meal_date: str, **kwargs) -> Optional[dict]:
+        """Update a response by user_id and meal_date."""
+        result = self._patch("tbl_usersresponse", kwargs, {
+            "user_id": f"eq.{user_id}",
+            "meal_date": f"eq.{meal_date}",
+        })
+        return result[0] if result else None
 
-def has_incomplete_not_ok(phone: str, survey_date: str) -> Optional[dict]:
-    """Check if user has a partial not_ok entry (no comment) for a date. Returns the entry or None."""
-    with _lock:
-        entry = get_latest_by_phone_and_date(phone, survey_date)
-        if entry and entry.get("rating") == "not_ok" and entry.get("comment") is None:
+    def get_recent_responses(self, count: int = 50) -> list[dict]:
+        """Get recent responses enriched with user name and phone."""
+        responses = self._get("tbl_usersresponse", {
+            "select": "*",
+            "order": "created_at.desc",
+            "limit": str(count),
+        })
+        if not responses:
+            return []
+        # Enrich with user data
+        user_ids = list(set(r["user_id"] for r in responses))
+        users = self._get("tbl_users", {
+            "select": "id,name,phoneno",
+            "id": f"in.({','.join(user_ids)})",
+        })
+        user_map = {u["id"]: u for u in users}
+        for r in responses:
+            user = user_map.get(r["user_id"], {})
+            r["phone"] = user.get("phoneno", "")
+            r["userName"] = user.get("name", "")
+        return responses
+
+    def get_surveys(self, count: int = 20) -> list[dict]:
+        """Get recent meals (survey batches)."""
+        return self._get("tbl_meal", {
+            "select": "*",
+            "order": "created_at.desc",
+            "limit": str(count),
+        })
+
+    def reset_user_responses(self, phone: str):
+        """Delete all responses for a user by phone (testing)."""
+        user = self.get_user_by_phone(phone)
+        if not user:
+            return
+        self._delete("tbl_usersresponse", {"user_id": f"eq.{user['id']}"})
+
+    def has_incomplete_not_ok(self, phone: str) -> Optional[dict]:
+        """Check if user has a not_ok response without remarks."""
+        user = self.get_user_by_phone(phone)
+        if not user:
+            return None
+        results = self._get("tbl_usersresponse", {
+            "user_id": f"eq.{user['id']}",
+            "user_response": "eq.not_ok",
+            "remarks": "is.null",
+            "order": "meal_date.desc",
+            "limit": "1",
+        })
+        return results[0] if results else None
+
+    def get_all_state_keys(self) -> list[str]:
+        """Get phones with active responses (debug helper)."""
+        results = self._get("tbl_usersresponse", {
+            "response_status": "in.(pending,rated)",
+            "select": "user_id",
+        })
+        if not results:
+            return []
+        user_ids = list(set(r["user_id"] for r in results))
+        users = self._get("tbl_users", {
+            "select": "phoneno",
+            "id": f"in.({','.join(user_ids)})",
+        })
+        return [u["phoneno"] for u in users]
+
+    # ── Legacy compatibility (used by conversation.py) ──────────────
+
+    def add_feedback(self, entry: dict) -> dict:
+        """Compatibility: insert or update a response from conversation handler."""
+        user = self.get_user_by_phone(entry.get("phone", ""))
+        if not user:
+            print(f"[store] add_feedback: User not found for phone {entry.get('phone')}")
             return entry
-        return None
+        user_id = user["id"]
+        meal_date = entry.get("surveyDate", "")
+        meal_name = entry.get("mealName", "")
+        rating = entry.get("rating", "")
+        comment = entry.get("comment")
 
+        # Check if response exists
+        existing = self.get_response_by_user_and_date(user_id, meal_date)
+        if existing:
+            # Update existing
+            now = datetime.now(timezone.utc).isoformat()
+            update_data = {
+                "user_response": rating,
+                "response_status": "completed" if (rating != "not_ok" or comment is not None) else "rated",
+                "response_datetime": now,
+            }
+            if comment is not None:
+                update_data["remarks"] = comment
+            self.update_response(user_id, meal_date, **update_data)
+            return entry
+        else:
+            # Create new
+            now = datetime.now(timezone.utc).isoformat()
+            self.create_response(user_id, meal_date, meal_name)
+            update_data = {
+                "user_response": rating,
+                "response_status": "completed" if (rating != "not_ok" or comment is not None) else "rated",
+                "response_datetime": now,
+            }
+            if comment is not None:
+                update_data["remarks"] = comment
+            self.update_response(user_id, meal_date, **update_data)
+            return entry
 
-def has_any_incomplete_not_ok(phone: str) -> Optional[dict]:
-    """Check if user has any partial not_ok entry (no comment) regardless of date.
-    Used for recovery when state was lost and we don't know the survey date."""
-    with _lock:
-        matches = [
-            e for e in _feedback_entries
-            if e.get("phone", "").lower() == phone.lower()
-            and e.get("rating") == "not_ok"
-            and e.get("comment") is None
-        ]
-        if not matches:
+    def update_feedback_comment(self, phone: str, comment: Optional[str], category: Optional[str]) -> Optional[dict]:
+        """Compatibility: update remarks on the latest response for a phone."""
+        user = self.get_user_by_phone(phone)
+        if not user:
+            print(f"[store] update_feedback_comment: User not found for phone {phone}")
             return None
-        return max(matches, key=lambda e: e.get("createdAt", ""))
-
-
-def reset_user(phone: str):
-    """Remove all feedback and state for a phone (testing)."""
-    with _lock:
-        _feedback_entries[:] = [e for e in _feedback_entries if e.get("phone", "").lower() != phone.lower()]
-        _user_states.pop(phone.lower(), None)
-        _atomic_save_json(FEEDBACK_FILE, _feedback_entries)
-        _atomic_save_json(STATES_FILE, list(_user_states.values()))
-
-
-# ── User state operations ──────────────────────────────────────────────
-
-def get_state(phone: str) -> Optional[dict]:
-    """Get the current state for a phone number."""
-    with _lock:
-        result = _user_states.get(phone.lower())
-        print(f"[store] get_state('{phone}') -> key='{phone.lower()}' result={result}")
+        # Find latest not_ok response without remarks
+        results = self._get("tbl_usersresponse", {
+            "user_id": f"eq.{user['id']}",
+            "user_response": "eq.not_ok",
+            "order": "meal_date.desc",
+            "limit": "1",
+        })
+        if not results:
+            return None
+        entry = results[0]
+        now = datetime.now(timezone.utc).isoformat()
+        update_data = {
+            "remarks": comment,
+            "response_status": "completed",
+            "response_datetime": now,
+        }
+        result = self.update_response(user["id"], entry["meal_date"], **update_data)
         return result
 
+    def get_latest_by_phone(self, phone: str) -> Optional[dict]:
+        """Compatibility: get latest response for a phone."""
+        return self.get_latest_response_by_phone(phone)
 
-def set_state(phone: str, state: str, meal_name: str = "", survey_date: str = ""):
-    """Set the state for a phone number, including survey date."""
-    with _lock:
-        state_dict = {
-            "phone": phone,
-            "state": state,
-            "mealName": meal_name,
-            "surveyDate": survey_date,
-        }
-        _user_states[phone.lower()] = state_dict
-        _atomic_save_json(STATES_FILE, list(_user_states.values()))
-        print(f"[store] set_state('{phone}', '{state}', meal='{meal_name}', date='{survey_date}') saved")
+    def get_latest_by_phone_and_date(self, phone: str, survey_date: str) -> Optional[dict]:
+        """Compatibility: get latest response for a phone and date."""
+        user = self.get_user_by_phone(phone)
+        if not user:
+            return None
+        return self.get_response_by_user_and_date(user["id"], survey_date)
+
+    def add_survey(self, survey: dict) -> dict:
+        """Compatibility: add a meal entry."""
+        meal = self.add_meal(survey.get("surveyDate", ""), survey.get("mealName", ""))
+        return meal
+
+    def get_recent(self, count: int = 50) -> list[dict]:
+        """Compatibility: get recent responses."""
+        responses = self.get_recent_responses(count)
+        # Map to old format for UI
+        result = []
+        for i, r in enumerate(responses):
+            result.append({
+                "id": r.get("id", "")[:8],
+                "phone": r.get("phone", ""),
+                "userName": r.get("userName", ""),
+                "mealName": r.get("meal_name", ""),
+                "surveyDate": r.get("meal_date", ""),
+                "rating": r.get("user_response", ""),
+                "comment": r.get("remarks"),
+                "responseStatus": r.get("response_status", ""),
+                "createdAt": r.get("response_datetime") or r.get("created_at", ""),
+            })
+        return result
+
+    def reset_user(self, phone: str):
+        """Compatibility: reset all responses for a user."""
+        self.reset_user_responses(phone)
+
+    # No-op methods (state is in DB now)
+    def get_state(self, phone: str) -> Optional[dict]:
+        """No-op — state is in the database."""
+        return None
+
+    def set_state(self, phone: str, state: str, meal_name: str = "", survey_date: str = ""):
+        """No-op — state is in the database."""
+        pass
+
+    def remove_state(self, phone: str):
+        """No-op — state is in the database."""
+        pass
 
 
-def remove_state(phone: str):
-    """Remove the state for a phone number."""
-    with _lock:
-        _user_states.pop(phone.lower(), None)
-        _atomic_save_json(STATES_FILE, list(_user_states.values()))
-        print(f"[store] remove_state('{phone}')")
-
-
-def get_all_state_keys() -> list[str]:
-    """Get all phone keys in the state dict (for debugging)."""
-    with _lock:
-        return list(_user_states.keys())
+# Module-level singleton
+store = SupabaseStore()

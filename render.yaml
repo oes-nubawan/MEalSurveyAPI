@@ -19,3 +19,7 @@ services:
         value: en_US
       - key: PYTHON_VERSION
         value: "3.11.0"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false

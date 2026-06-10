@@ -7,7 +7,7 @@
   <style>
     * { box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f0f2f5; color: #1e293b; }
-    .container { max-width: 1100px; margin: 0 auto; }
+    .container { max-width: 1200px; margin: 0 auto; }
     .card { background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 1px 6px rgba(0,0,0,0.06); margin-bottom: 20px; }
     h1 { margin: 0 0 4px; font-size: 1.5rem; }
     h2 { margin: 0 0 16px; font-size: 1.15rem; color: #334155; }
@@ -28,6 +28,8 @@
     .btn-secondary:hover { background: #4b5563; }
     .btn-danger { background: #dc2626; color: #fff; }
     .btn-danger:hover { background: #b91c1c; }
+    .btn-success { background: #16a34a; color: #fff; }
+    .btn-success:hover { background: #15803d; }
     .btn-sm { padding: 6px 12px; font-size: 0.82rem; }
     .status { margin: 14px 0; padding: 10px 14px; border-radius: 8px; font-size: 0.9rem; line-height: 1.5; }
     .status.ok { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
@@ -37,47 +39,44 @@
     th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #f3f4f6; }
     th { background: #f9fafb; font-weight: 700; color: #475569; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
     tr:hover td { background: #f9fafb; }
-    tr.row-updated td { background: #fef9c3; transition: background 0.5s; }
     .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
     .badge-very_good { background: #dcfce7; color: #166534; }
     .badge-good { background: #dbeafe; color: #1e40af; }
     .badge-satisfactory { background: #fef9c3; color: #854d0e; }
     .badge-not_ok { background: #fee2e2; color: #991b1b; }
+    .badge-pending { background: #e0e7ff; color: #3730a3; }
+    .badge-rated { background: #fef9c3; color: #854d0e; }
+    .badge-completed { background: #dcfce7; color: #166534; }
     .badge-sent { background: #e0e7ff; color: #3730a3; }
-    .badge-waiting { background: #fef9c3; color: #854d0e; }
-    .badge-done { background: #dcfce7; color: #166534; }
     .empty { text-align: center; padding: 32px; color: #94a3b8; font-size: 0.9rem; }
     .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
     .auto-refresh { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #64748b; }
     .auto-refresh input { width: auto; }
-    .reset-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
-    .reset-row input { flex: 1; }
-    .send-results { margin-top: 10px; font-size: 0.85rem; line-height: 1.6; }
-    .send-results .ok { color: #16a34a; }
-    .send-results .fail { color: #dc2626; }
-    .phone-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-    .phone-tag { background: #e0e7ff; color: #3730a3; padding: 3px 10px; border-radius: 999px; font-size: 0.78rem; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
-    .phone-tag .remove { cursor: pointer; color: #6366f1; font-weight: bold; }
-    .phone-tag .remove:hover { color: #dc2626; }
     .tab-row { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid #e5e7eb; }
     .tab { padding: 8px 16px; cursor: pointer; font-size: 0.9rem; font-weight: 600; color: #64748b; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.15s; }
     .tab:hover { color: #2563eb; }
     .tab.active { color: #2563eb; border-bottom-color: #2563eb; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
-    .survey-history-item { padding: 12px 0; border-bottom: 1px solid #f3f4f6; }
-    .survey-history-item:last-child { border-bottom: none; }
-    .survey-meta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
-    .survey-meta strong { font-size: 0.95rem; }
-    .survey-phones { font-size: 0.8rem; color: #64748b; }
-    .survey-stats { display: flex; gap: 12px; font-size: 0.8rem; margin-top: 4px; }
-    .stat-item { display: flex; align-items: center; gap: 3px; }
+    .toggle { position: relative; display: inline-block; width: 42px; height: 24px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #cbd5e1; border-radius: 24px; transition: 0.2s; }
+    .toggle .slider:before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: 0.2s; }
+    .toggle input:checked + .slider { background: #16a34a; }
+    .toggle input:checked + .slider:before { transform: translateX(18px); }
+    .send-results { margin-top: 10px; font-size: 0.85rem; line-height: 1.6; }
+    .send-results .ok { color: #16a34a; }
+    .send-results .fail { color: #dc2626; }
+    .avail-count { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; background: #dcfce7; color: #166534; border-radius: 999px; font-size: 0.82rem; font-weight: 600; }
+    .inline-form { display: flex; gap: 8px; align-items: flex-end; }
+    .inline-form .field { margin-bottom: 0; }
     @media (max-width: 640px) {
       .row { flex-direction: column; gap: 0; }
       body { padding: 12px; }
       .card { padding: 16px; }
       table { font-size: 0.72rem; }
       th, td { padding: 6px 4px; }
+      .inline-form { flex-direction: column; }
     }
   </style>
 </head>
@@ -86,7 +85,7 @@
     <!-- Header -->
     <div class="card">
       <h1>Meal Survey</h1>
-      <p class="subtitle">Send meal satisfaction surveys via WhatsApp. One response per user per day.</p>
+      <p class="subtitle">Send meal satisfaction surveys via WhatsApp. One response per user per day. Powered by Supabase.</p>
     </div>
 
     <!-- Send Survey -->
@@ -101,40 +100,35 @@
         <div class="field">
           <label for="surveyDate">Survey Date</label>
           <input id="surveyDate" type="date" />
-          <div class="hint">Defaults to today (UTC). Used for duplicate prevention — same date = one response.</div>
+          <div class="hint">Defaults to today (UTC).</div>
         </div>
-      </div>
-
-      <div class="field">
-        <label for="phoneInput">Phone Numbers</label>
-        <div style="display:flex;gap:8px;">
-          <input id="phoneInput" type="text" placeholder="923001234567" style="flex:1;" />
-          <button id="addPhoneBtn" class="btn-secondary btn-sm" type="button">Add</button>
-        </div>
-        <div class="hint">Enter a phone number and click Add, or press Enter. Include country code, no + or spaces.</div>
-        <div id="phoneTags" class="phone-tags"></div>
       </div>
 
       <div class="row">
         <div class="field">
           <label for="surveyType">Survey Type</label>
           <select id="surveyType">
+            <option value="button">Buttons (3 options — auto-disable after tap)</option>
             <option value="list">List (4 options)</option>
             <option value="template">Template (pre-approved)</option>
           </select>
         </div>
-        <div class="field" style="display:flex;align-items:flex-end;">
-          <button id="sendButton" class="btn-primary" style="width:100%;">Send Survey</button>
+        <div class="field" style="display:flex;align-items:flex-end;gap:12px;">
+          <div>
+            <span class="avail-count" id="availCount">0 available users</span>
+          </div>
+          <button id="sendButton" class="btn-primary" style="flex:1;">Send Survey</button>
         </div>
       </div>
 
       <div id="sendStatus"></div>
     </div>
 
-    <!-- Responses & Surveys Tabs -->
+    <!-- Tabs -->
     <div class="card">
       <div class="tab-row">
         <div class="tab active" data-tab="responses">Responses</div>
+        <div class="tab" data-tab="users">Users</div>
         <div class="tab" data-tab="surveys">Survey History</div>
       </div>
 
@@ -145,24 +139,48 @@
           <span id="feedbackCount" style="color:#94a3b8;font-size:0.82rem;"></span>
           <div class="auto-refresh">
             <input type="checkbox" id="autoRefresh" checked />
-            <label for="autoRefresh" style="margin:0;font-weight:normal;">Auto-refresh (3s)</label>
+            <label for="autoRefresh" style="margin:0;font-weight:normal;">Auto-refresh</label>
           </div>
-        </div>
-
-        <div class="reset-row">
-          <input id="resetPhone" type="text" placeholder="Phone to reset (testing)" />
-          <button class="btn-danger btn-sm" id="resetButton">Reset</button>
+          <div style="margin-left:auto;">
+            <input id="resetPhone" type="text" placeholder="Phone to reset" style="width:160px;padding:5px 8px;font-size:0.82rem;" />
+            <button class="btn-danger btn-sm" id="resetButton">Reset</button>
+          </div>
         </div>
 
         <div style="overflow-x:auto;">
           <table>
             <thead>
-              <tr><th>#</th><th>Phone</th><th>Meal</th><th>Date</th><th>Rating</th><th>Comment</th><th>Status</th><th>Time</th></tr>
+              <tr><th>#</th><th>Name</th><th>Phone</th><th>Meal</th><th>Date</th><th>Rating</th><th>Remarks</th><th>Status</th><th>Time</th></tr>
             </thead>
             <tbody id="responsesBody"></tbody>
           </table>
         </div>
         <div id="emptyState" class="empty" style="display:none;">No feedback yet. Send a survey to get started.</div>
+      </div>
+
+      <!-- Users Tab -->
+      <div id="tab-users" class="tab-content">
+        <div class="inline-form" style="margin-bottom:16px;">
+          <div class="field" style="flex:1;">
+            <label>Name</label>
+            <input id="newUserName" type="text" placeholder="Zayan" />
+          </div>
+          <div class="field" style="flex:1;">
+            <label>Phone</label>
+            <input id="newUserPhone" type="text" placeholder="923001234567" />
+          </div>
+          <button id="addUserBtn" class="btn-primary btn-sm" style="height:38px;">Add User</button>
+        </div>
+
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Phone</th><th>Availed</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+        <div id="emptyUsers" class="empty" style="display:none;">No users yet. Add users above.</div>
       </div>
 
       <!-- Surveys Tab -->
@@ -180,8 +198,8 @@
       <span style="cursor:pointer;color:#64748b;font-size:0.85rem;" id="debugToggle">[+] Debug</span>
       <div id="debugContent" style="display:none;margin-top:10px;">
         <div class="actions">
-          <button class="btn-secondary btn-sm" id="debugState">Show State</button>
-          <button class="btn-secondary btn-sm" id="debugWebhooks">Show Webhooks</button>
+          <button class="btn-secondary btn-sm" id="debugState">Active States</button>
+          <button class="btn-secondary btn-sm" id="debugWebhooks">Recent Webhooks</button>
         </div>
         <pre id="debugOutput" style="background:#1e293b;color:#e2e8f0;padding:12px;border-radius:8px;overflow-x:auto;font-size:0.72rem;max-height:300px;overflow-y:auto;margin:0;">Click a button above.</pre>
       </div>
@@ -189,64 +207,22 @@
   </div>
 
   <script>
-    // ── Phone List Management ────────────────────────────────────────
-    var phoneList = [];
-
-    function renderPhoneTags() {
-      var container = document.getElementById('phoneTags');
-      if (phoneList.length === 0) {
-        container.innerHTML = '';
-        return;
-      }
-      var html = '';
-      phoneList.forEach(function(p, i) {
-        html += '<span class="phone-tag">' + esc(p) + ' <span class="remove" data-index="' + i + '">&times;</span></span>';
-      });
-      container.innerHTML = html;
-
-      // Attach remove handlers
-      container.querySelectorAll('.remove').forEach(function(el) {
-        el.addEventListener('click', function() {
-          phoneList.splice(parseInt(this.dataset.index), 1);
-          renderPhoneTags();
-        });
-      });
-    }
-
-    function addPhone() {
-      var input = document.getElementById('phoneInput');
-      var raw = input.value.trim().replace(/[^0-9]/g, '');
-      if (!raw) return;
-      // Split by comma or newline in case user pastes multiple
-      var nums = raw.split(/[,\n]+/).map(function(p) { return p.trim().replace(/[^0-9]/g, ''); }).filter(Boolean);
-      nums.forEach(function(n) {
-        if (n && phoneList.indexOf(n) === -1) {
-          phoneList.push(n);
-        }
-      });
-      input.value = '';
-      renderPhoneTags();
-      input.focus();
-    }
-
-    document.getElementById('addPhoneBtn').addEventListener('click', addPhone);
-    document.getElementById('phoneInput').addEventListener('keydown', function(e) {
-      if (e.key === 'Enter') { e.preventDefault(); addPhone(); }
-    });
-
-    // ── Elements ────────────────────────────────────────────────────
-    var sendStatus = document.getElementById('sendStatus');
-    var responsesBody = document.getElementById('responsesBody');
-    var emptyState = document.getElementById('emptyState');
-    var feedbackCount = document.getElementById('feedbackCount');
-    var previousData = null; // For detecting row updates
-
-    // Set default date to today
+    // ── Set default date ──────────────────────────────────────────────
     var today = new Date();
-    var yyyy = today.getUTCFullYear();
-    var mm = String(today.getUTCMonth() + 1).padStart(2, '0');
-    var dd = String(today.getUTCDate()).padStart(2, '0');
-    document.getElementById('surveyDate').value = yyyy + '-' + mm + '-' + dd;
+    document.getElementById('surveyDate').value = today.getUTCFullYear() + '-' +
+      String(today.getUTCMonth() + 1).padStart(2, '0') + '-' +
+      String(today.getUTCDate()).padStart(2, '0');
+
+    // ── Load available user count ─────────────────────────────────────
+    async function loadAvailCount() {
+      try {
+        var r = await fetch('/api/users/available');
+        if (!r.ok) return;
+        var users = await r.json();
+        document.getElementById('availCount').textContent = users.length + ' available users';
+      } catch(e) { console.error(e); }
+    }
+    loadAvailCount();
 
     // ── Tabs ────────────────────────────────────────────────────────
     document.querySelectorAll('.tab').forEach(function(tab) {
@@ -255,6 +231,7 @@
         document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
         this.classList.add('active');
         document.getElementById('tab-' + this.dataset.tab).classList.add('active');
+        if (this.dataset.tab === 'users') loadUsers();
         if (this.dataset.tab === 'surveys') loadSurveys();
       });
     });
@@ -265,46 +242,37 @@
       var surveyDate = document.getElementById('surveyDate').value;
       var surveyType = document.getElementById('surveyType').value;
 
-      if (phoneList.length === 0) { showStatus('err', 'Add at least one phone number.'); return; }
       if (!mealName) { showStatus('err', 'Enter a meal name.'); return; }
       if (!surveyDate) { showStatus('err', 'Select a survey date.'); return; }
 
       var btn = this;
       btn.disabled = true;
       btn.textContent = 'Sending...';
-      showStatus('info', 'Sending survey to ' + phoneList.length + ' phone(s)...');
+      showStatus('info', 'Sending survey to available users...');
 
       try {
         var response = await fetch('/api/survey/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            phones: phoneList.join(','),
-            mealName: mealName,
-            surveyDate: surveyDate,
-            surveyType: surveyType
-          })
+          body: JSON.stringify({ mealName: mealName, surveyDate: surveyDate, surveyType: surveyType })
         });
-
         var data = await response.json();
-        if (!response.ok) {
-          showStatus('err', data.error || 'Send failed.');
-          return;
-        }
+        if (!response.ok) { showStatus('err', data.error || 'Send failed.'); return; }
 
         var html = '<div class="send-results">';
         html += '<strong>' + esc(data.mealName) + '</strong> — ' + esc(data.surveyDate) + '<br>';
-        html += '<span style="color:#64748b;font-size:0.82rem;">Survey type: ' + esc(data.surveyType) + '</span><br>';
-        (data.sent || []).forEach(function(s) { html += '<span class="ok">✓ ' + esc(s.phone) + '</span><br>'; });
-        (data.errors || []).forEach(function(e) { html += '<span class="fail">✗ ' + esc(e.phone) + ': ' + esc(e.error) + '</span><br>'; });
+        html += '<span style="color:#64748b;font-size:0.82rem;">Type: ' + esc(data.surveyType) + ' | Total available: ' + data.totalAvailable + '</span><br>';
+        (data.sent || []).forEach(function(s) {
+          var icon = s.status === 'sent' ? '✓' : '⊘';
+          var cls = s.status === 'sent' ? 'ok' : 'fail';
+          var extra = s.reason ? ' (' + s.reason + ')' : '';
+          html += '<span class="' + cls + '">' + icon + ' ' + esc(s.name || s.phone) + extra + '</span><br>';
+        });
+        (data.errors || []).forEach(function(e) { html += '<span class="fail">✗ ' + esc(e.name || e.phone) + ': ' + esc(e.error) + '</span><br>'; });
         html += '</div>';
         showStatus('ok', html);
-
-        // Clear phone list on success
-        phoneList = [];
-        renderPhoneTags();
-
         loadResponses();
+        loadAvailCount();
       } catch (err) {
         showStatus('err', 'Error: ' + err.message);
       } finally {
@@ -314,7 +282,7 @@
     });
 
     function showStatus(type, html) {
-      sendStatus.innerHTML = '<div class="status ' + type + '">' + html + '</div>';
+      document.getElementById('sendStatus').innerHTML = '<div class="status ' + type + '">' + html + '</div>';
     }
 
     // ── Refresh ─────────────────────────────────────────────────────
@@ -333,83 +301,145 @@
     });
 
     // ── Load Responses ──────────────────────────────────────────────
-    var lastCount = -1;
     async function loadResponses() {
       try {
         var response = await fetch('/api/ui/recent');
         if (!response.ok) return;
         var data = await response.json();
-        feedbackCount.textContent = data.length + ' entries';
+        if (data.error) { document.getElementById('responsesBody').innerHTML = '<tr><td colspan="9" style="color:#dc2626;">' + esc(data.error) + '</td></tr>'; return; }
+        document.getElementById('feedbackCount').textContent = data.length + ' entries';
 
         if (data.length === 0) {
-          responsesBody.innerHTML = '';
-          emptyState.style.display = 'block';
-          previousData = null;
+          document.getElementById('responsesBody').innerHTML = '';
+          document.getElementById('emptyState').style.display = 'block';
           return;
         }
 
-        emptyState.style.display = 'none';
+        document.getElementById('emptyState').style.display = 'none';
         var html = '';
-        var updatedRows = new Set();
-
         for (var i = 0; i < data.length; i++) {
           var item = data[i];
-          var rowKey = item.phone + '::' + item.surveyDate;
-
-          // Detect updated rows (new data differs from previous)
-          var isUpdated = false;
-          if (previousData) {
-            var prev = previousData[rowKey];
-            if (prev && (prev.comment !== item.comment || prev.rating !== item.rating)) {
-              isUpdated = true;
-            }
-          }
-
-          var statusBadge = getStatusBadge(item);
-          var updateClass = isUpdated ? ' class="row-updated"' : '';
-
-          html += '<tr' + updateClass + '>' +
-            '<td>' + (item.id || (i+1)) + '</td>' +
+          var rating = item.rating || '';
+          var statusBadge = '<span class="badge badge-' + (item.responseStatus || 'pending') + '">' + fmtStatus(item.responseStatus) + '</span>';
+          html += '<tr>' +
+            '<td>' + (i + 1) + '</td>' +
+            '<td>' + esc(item.userName || '') + '</td>' +
             '<td>' + esc(item.phone || '') + '</td>' +
             '<td>' + esc(item.mealName || '') + '</td>' +
             '<td>' + esc(item.surveyDate || '-') + '</td>' +
-            '<td><span class="badge badge-' + (item.rating || '') + '">' + fmtRating(item.rating) + '</span></td>' +
+            '<td><span class="badge badge-' + rating + '">' + fmtRating(rating) + '</span></td>' +
             '<td>' + esc(item.comment || '-') + '</td>' +
             '<td>' + statusBadge + '</td>' +
             '<td>' + fmtDate(item.createdAt) + '</td>' +
           '</tr>';
         }
-        responsesBody.innerHTML = html;
-
-        // Store current data for next comparison
-        var newDataMap = {};
-        data.forEach(function(item) {
-          newDataMap[item.phone + '::' + item.surveyDate] = {
-            rating: item.rating,
-            comment: item.comment
-          };
-        });
-        previousData = newDataMap;
-        lastCount = data.length;
-
-        // Remove highlight after 2 seconds
-        setTimeout(function() {
-          document.querySelectorAll('.row-updated').forEach(function(row) {
-            row.classList.remove('row-updated');
-          });
-        }, 2000);
-
+        document.getElementById('responsesBody').innerHTML = html;
       } catch (err) { console.error(err); }
     }
 
-    function getStatusBadge(item) {
-      if (!item.rating) return '<span class="badge badge-sent">Sent</span>';
-      if (item.rating === 'not_ok' && !item.comment) return '<span class="badge badge-waiting">Waiting</span>';
-      return '<span class="badge badge-done">Done</span>';
+    // ── Load Users ──────────────────────────────────────────────────
+    async function loadUsers() {
+      try {
+        var response = await fetch('/api/users');
+        if (!response.ok) return;
+        var users = await response.json();
+        if (users.error) { document.getElementById('usersBody').innerHTML = '<tr><td colspan="4" style="color:#dc2626;">' + esc(users.error) + '</td></tr>'; return; }
+
+        if (users.length === 0) {
+          document.getElementById('usersBody').innerHTML = '';
+          document.getElementById('emptyUsers').style.display = 'block';
+          return;
+        }
+
+        document.getElementById('emptyUsers').style.display = 'none';
+        var html = '';
+        users.forEach(function(u) {
+          var checked = u.availstatus ? 'checked' : '';
+          html += '<tr>' +
+            '<td>' + esc(u.name) + '</td>' +
+            '<td>' + esc(u.phoneno) + '</td>' +
+            '<td><label class="toggle"><input type="checkbox" ' + checked + ' data-userid="' + u.id + '" class="avail-toggle" /><span class="slider"></span></label></td>' +
+            '<td><button class="btn-danger btn-sm" onclick="deleteUser(\'' + u.id + '\',\'' + esc(u.name) + '\')">Delete</button></td>' +
+          '</tr>';
+        });
+        document.getElementById('usersBody').innerHTML = html;
+
+        // Attach toggle handlers
+        document.querySelectorAll('.avail-toggle').forEach(function(el) {
+          el.addEventListener('change', async function() {
+            var userId = this.dataset.userid;
+            var status = this.checked;
+            try {
+              await fetch('/api/users/' + userId, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ availstatus: status })
+              });
+              loadAvailCount();
+            } catch(e) { console.error(e); }
+          });
+        });
+      } catch (err) { console.error(err); }
     }
 
+    // ── Add User ────────────────────────────────────────────────────
+    document.getElementById('addUserBtn').addEventListener('click', async function() {
+      var name = document.getElementById('newUserName').value.trim();
+      var phone = document.getElementById('newUserPhone').value.trim().replace(/[^0-9]/g, '');
+      if (!name || !phone) { alert('Name and phone are required.'); return; }
+
+      try {
+        var r = await fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name, phoneno: phone })
+        });
+        var data = await r.json();
+        if (!r.ok) { alert(data.error || 'Failed to add user.'); return; }
+        document.getElementById('newUserName').value = '';
+        document.getElementById('newUserPhone').value = '';
+        loadUsers();
+        loadAvailCount();
+      } catch(e) { alert('Error: ' + e.message); }
+    });
+
+    // ── Delete User ─────────────────────────────────────────────────
+    window.deleteUser = async function(userId, userName) {
+      if (!confirm('Delete ' + userName + '? This will also delete their responses.')) return;
+      try {
+        await fetch('/api/users/' + userId, { method: 'DELETE' });
+        loadUsers();
+        loadAvailCount();
+      } catch(e) { console.error(e); }
+    };
+
+    // ── Load Surveys ────────────────────────────────────────────────
+    async function loadSurveys() {
+      try {
+        var r = await fetch('/api/ui/surveys');
+        if (!r.ok) return;
+        var data = await r.json();
+        var container = document.getElementById('surveysContent');
+        var emptyEl = document.getElementById('emptySurveys');
+
+        if (!data || data.length === 0) { container.innerHTML = ''; emptyEl.style.display = 'block'; return; }
+        emptyEl.style.display = 'none';
+
+        var html = '<table><thead><tr><th>Meal</th><th>Date</th><th>Created</th></tr></thead><tbody>';
+        data.forEach(function(s) {
+          html += '<tr><td>' + esc(s.meal_name || '') + '</td><td>' + esc(s.meal_date || '') + '</td><td>' + fmtDate(s.created_at) + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+      } catch (err) { console.error(err); }
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────
     function fmtRating(r) {
       return { very_good:'Very Good', good:'Good', satisfactory:'Satisfactory', not_ok:'Not Acceptable' }[r] || r || '-';
+    }
+    function fmtStatus(s) {
+      return { pending:'Pending', rated:'Awaiting Remarks', completed:'Done' }[s] || s || '-';
     }
     function fmtDate(d) {
       if (!d) return '-';
@@ -417,46 +447,7 @@
       catch(e) { return d; }
     }
     function esc(v) {
-      return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
-
-    // ── Load Surveys ────────────────────────────────────────────────
-    async function loadSurveys() {
-      try {
-        var response = await fetch('/api/ui/surveys');
-        if (!response.ok) return;
-        var data = await response.json();
-        var container = document.getElementById('surveysContent');
-        var emptyEl = document.getElementById('emptySurveys');
-
-        if (!data || data.length === 0) {
-          container.innerHTML = '';
-          emptyEl.style.display = 'block';
-          return;
-        }
-
-        emptyEl.style.display = 'none';
-        var html = '';
-        data.forEach(function(s) {
-          var phoneStr = (s.phones || []).join(', ');
-          html += '<div class="survey-history-item">';
-          html += '<div class="survey-meta">';
-          html += '<strong>' + esc(s.mealName || 'Unknown') + '</strong>';
-          html += '<span class="badge badge-sent">' + esc(s.surveyType || 'list') + '</span>';
-          html += '<span style="color:#64748b;font-size:0.82rem;">' + esc(s.surveyDate || '') + '</span>';
-          html += '</div>';
-          html += '<div class="survey-phones">To: ' + esc(phoneStr || 'N/A') + '</div>';
-          html += '<div class="survey-stats">';
-          html += '<span class="stat-item" style="color:#16a34a;">✓ Sent: ' + (s.sentCount || 0) + '</span>';
-          if (s.errorCount > 0) {
-            html += '<span class="stat-item" style="color:#dc2626;">✗ Failed: ' + s.errorCount + '</span>';
-          }
-          html += '<span class="stat-item" style="color:#64748b;">' + fmtDate(s.createdAt) + '</span>';
-          html += '</div>';
-          html += '</div>';
-        });
-        container.innerHTML = html;
-      } catch (err) { console.error(err); }
+      return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
     }
 
     // ── Auto-refresh ────────────────────────────────────────────────

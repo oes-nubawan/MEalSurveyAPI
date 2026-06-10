@@ -1,31 +1,32 @@
 """
-WhatsApp Meal Survey — Flask Application
-=========================================
+WhatsApp Meal Survey — Flask Application (Supabase Backend)
+===========================================================
 Key features:
-1. ONE response per user per day — date-based duplicate blocking
-2. 4 rating options: Very Good, Good, Satisfactory, Not Acceptable
-3. When "Not Acceptable" is selected, user can type free-text complaint
-4. Frontend dashboard shows all responses in real-time
-5. Multi-phone survey sending with date + meal selection
-6. Data persisted to local JSON files
+1. ONE response per user per date (UNIQUE constraint in Supabase)
+2. 3-button WhatsApp survey — buttons disappear after tap (no duplicates!)
+3. "Not Acceptable" → free-text remarks flow
+4. Send surveys only to users with availstatus = true
+5. All data in Supabase (no JSON files, no in-memory state loss)
+6. User management from UI
 
 Environment variables:
 - WHATSAPP_TOKEN
 - WHATSAPP_PHONE_NUMBER_ID
 - WHATSAPP_VERIFY_TOKEN
+- SUPABASE_URL
+- SUPABASE_SERVICE_KEY
 """
 
 import os
-import re
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template
-import store
+from store import store as db
 from whatsapp_service import WhatsAppService
-from conversation import process_webhook, unmark_all_for_phone
+from conversation import process_webhook
 
 app = Flask(__name__)
 
-store.init()
+db.init()
 wa = WhatsAppService()
 
 _recent_webhooks = []
@@ -47,19 +48,9 @@ def _validate_date(date_str: str) -> bool:
         return False
 
 
-def _parse_phones(phones_input) -> list[str]:
-    """Parse phone numbers from various input formats.
-    Accepts: comma-separated string, list of strings, or single string.
-    Returns list of cleaned phone numbers.
-    """
-    if isinstance(phones_input, list):
-        phones = []
-        for p in phones_input:
-            phones.extend([x.strip() for x in str(p).split(",") if x.strip()])
-        return phones
-    if isinstance(phones_input, str):
-        return [x.strip() for x in phones_input.split(",") if x.strip()]
-    return []
+def _clean_phone(phone: str) -> str:
+    """Clean a phone number — strip + and spaces."""
+    return phone.strip().replace("+", "").replace(" ", "")
 
 
 # ── Routes ────────────────────────────────────────────────────────────
@@ -123,92 +114,154 @@ def webhook_receive():
 
 @app.route("/api/survey/send", methods=["POST"])
 def send_survey():
-    """Send a meal survey to one or more WhatsApp users.
+    """Send a meal survey to all available users.
 
     Request body:
     {
-        "phones": "923001234567,923009876543" or ["923001234567", "923009876543"],
         "mealName": "Chicken Biryani",
-        "surveyDate": "2026-06-10",  // optional, defaults to today UTC
-        "surveyType": "list"          // optional, defaults to "list"
+        "surveyDate": "2026-06-10",
+        "surveyType": "button"   // optional, defaults to "button"
     }
 
-    The surveyDate is validated (not future, proper format) and stored.
-    It is NOT shown to the WhatsApp user.
+    Sends to ALL users with availstatus = true.
+    Creates a meal entry and pending response rows in Supabase.
     """
     data = request.get_json(silent=True) or {}
     meal_name = data.get("mealName", "").strip()
-    survey_type = (data.get("surveyType") or "list").lower()
+    survey_type = (data.get("surveyType") or "button").lower()
     survey_date = data.get("surveyDate", "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    # Parse phones (accepts comma-separated string or list)
-    phones = _parse_phones(data.get("phones", data.get("phone", "")))
-
-    if not phones:
-        return jsonify({"error": "At least one phone number is required."}), 400
     if not meal_name:
         return jsonify({"error": "Meal name is required."}), 400
 
-    # Validate date
     if not _validate_date(survey_date):
-        return jsonify({"error": f"Invalid survey date '{survey_date}'. Use YYYY-MM-DD format, not in the future."}), 400
+        return jsonify({"error": f"Invalid survey date '{survey_date}'. Use YYYY-MM-DD, not in the future."}), 400
+
+    # Get available users
+    available_users = db.get_available_users()
+    if not available_users:
+        return jsonify({"error": "No available users found. Add users with availstatus=true."}), 400
+
+    # Create meal entry
+    try:
+        db.add_meal(survey_date, meal_name)
+    except Exception as e:
+        print(f"[survey] Meal entry error (may already exist): {e}")
 
     results = []
     errors = []
 
-    for phone in phones:
-        if not phone:
+    for user in available_users:
+        phone = user["phoneno"]
+        user_id = user["id"]
+        user_name = user.get("name", "")
+
+        # Create pending response (skips if already exists)
+        response = db.create_response(user_id, survey_date, meal_name)
+        if not response:
+            results.append({"phone": phone, "name": user_name, "status": "skipped", "reason": "already has response"})
             continue
 
-        # Set user state with surveyDate — this allows them to respond
-        store.set_state(phone, "SURVEY_SENT", meal_name, survey_date)
-
         try:
-            print(f"[survey] Sending {survey_type} survey to {phone} for {meal_name} (date: {survey_date})")
+            print(f"[survey] Sending {survey_type} survey to {user_name} ({phone}) for {meal_name} (date: {survey_date})")
             wa.send_survey(phone, meal_name, survey_type)
-            results.append({"phone": phone, "status": "sent"})
+            results.append({"phone": phone, "name": user_name, "status": "sent"})
         except Exception as e:
             print(f"[survey] Failed to send to {phone}: {e}")
-            errors.append({"phone": phone, "error": str(e)})
-
-    # Log the survey batch
-    store.add_survey({
-        "mealName": meal_name,
-        "surveyDate": survey_date,
-        "surveyType": survey_type,
-        "phones": phones,
-        "sentCount": len(results),
-        "errorCount": len(errors),
-    })
+            errors.append({"phone": phone, "name": user_name, "error": str(e)})
 
     return jsonify({
         "status": "completed",
         "mealName": meal_name,
         "surveyDate": survey_date,
         "surveyType": survey_type,
+        "totalAvailable": len(available_users),
         "sent": results,
         "errors": errors,
     })
 
 
-# ── UI API ────────────────────────────────────────────────────────────
+# ── User Management API ──────────────────────────────────────────────
+
+
+@app.route("/api/users", methods=["GET"])
+def get_users():
+    """Get all users."""
+    try:
+        users = db.get_all_users()
+        return jsonify(users)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/users", methods=["POST"])
+def add_user():
+    """Add a new user."""
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip()
+    phoneno = data.get("phoneno", "").strip()
+    availstatus = data.get("availstatus", True)
+
+    if not name or not phoneno:
+        return jsonify({"error": "Name and phone number are required."}), 400
+
+    try:
+        user = db.add_user(name, phoneno, availstatus)
+        return jsonify(user), 201
+    except Exception as e:
+        if "duplicate" in str(e).lower() or "unique" in str(e).lower() or "409" in str(e):
+            return jsonify({"error": f"Phone number {phoneno} already exists."}), 409
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/users/<user_id>", methods=["PATCH"])
+def update_user(user_id):
+    """Update a user (name, phoneno, availstatus)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        user = db.update_user(user_id, **data)
+        return jsonify(user)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/users/<user_id>", methods=["DELETE"])
+def delete_user(user_id):
+    """Delete a user."""
+    try:
+        db.delete_user(user_id)
+        return jsonify({"status": "deleted"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/users/available", methods=["GET"])
+def get_available_users():
+    """Get available users (availstatus=true)."""
+    try:
+        users = db.get_available_users()
+        return jsonify(users)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Response / UI API ────────────────────────────────────────────────
 
 
 @app.route("/api/ui/recent")
 def get_recent():
     try:
-        recent = store.get_recent(50)
+        recent = db.get_recent(50)
         return jsonify(recent)
     except Exception as e:
-        print(f"[ui] Error fetching recent feedback: {e}")
-        return jsonify({"error": "Failed to load feedback", "details": str(e)}), 500
+        print(f"[ui] Error fetching recent: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/ui/surveys")
 def get_surveys():
-    """Get recent survey batches."""
     try:
-        surveys = store.get_surveys(20)
+        surveys = db.get_surveys(20)
         return jsonify(surveys)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -216,15 +269,14 @@ def get_surveys():
 
 @app.route("/api/ui/count")
 def get_count():
-    recent = store.get_recent(1000)
+    recent = db.get_recent(1000)
     return jsonify({"count": len(recent)})
 
 
 @app.route("/api/ui/reset/<phone>", methods=["DELETE"])
 def reset_user(phone):
     print(f"[ui] Resetting user {phone}")
-    store.reset_user(phone)
-    unmark_all_for_phone(phone)
+    db.reset_user(phone)
     return jsonify({"status": "reset", "phone": phone})
 
 
@@ -235,11 +287,12 @@ def get_debug_webhooks():
 
 @app.route("/api/ui/debug/state")
 def get_debug_state():
-    """Debug endpoint — show all current user states."""
-    return jsonify({
-        "stateKeys": store.get_all_state_keys(),
-        "states": {k: store.get_state(k) for k in store.get_all_state_keys()},
-    })
+    """Debug endpoint — show active response states."""
+    try:
+        keys = db.get_all_state_keys()
+        return jsonify({"activePhones": keys, "count": len(keys)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Run ───────────────────────────────────────────────────────────────
