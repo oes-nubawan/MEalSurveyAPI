@@ -8,8 +8,8 @@ The response_status field in tbl_usersresponse IS the state machine:
   completed → fully done (positive rating OR not_ok + remarks)
 
 Duplicate prevention: ONE row per user per meal_date (UNIQUE constraint).
-Once a user gives a rating, they CANNOT change it. Block with "already submitted".
-Any extra text after completing is saved as remarks.
+After the first "Thank you" response, all further messages are SILENTLY IGNORED.
+No reply = no encouragement to keep tapping.
 """
 
 import threading
@@ -97,16 +97,14 @@ def _handle_internal(user_phone: str, input_text: str, wa: WhatsAppService):
         # No pending/rated response — check if they already completed one
         latest = db.get_latest_response_by_phone(user_phone)
         if latest and latest.get("response_status") == "completed":
-            # Already completed — save any extra text as remarks if they had none
+            # Already completed — save extra text as remarks (silent), then ignore
             if latest.get("remarks") is None and input_text not in RATING_IDS and latest.get("user_response") != "not_ok":
                 print(f"[conversation] Saving extra comment from {user_name}: '{input_text}'")
                 db.update_response(user_id, latest["meal_date"], remarks=input_text)
-            print(f"[conversation] User {user_name} already completed. Blocking.")
-            wa.send_text(user_phone, "You have already submitted your feedback. Thank you!")
-            return
-        # No survey sent to this user at all
-        print(f"[conversation] No active survey for {user_name}")
-        wa.send_text(user_phone, "No active survey found. Please wait for a survey to be sent.")
+            print(f"[conversation] User {user_name} already completed. SILENT IGNORE.")
+            return  # No reply after first "Thank you"
+        # No survey sent to this user at all — also silent
+        print(f"[conversation] No active survey for {user_name}. SILENT IGNORE.")
         return
 
     meal_date = active["meal_date"]
@@ -116,23 +114,21 @@ def _handle_internal(user_phone: str, input_text: str, wa: WhatsAppService):
 
     print(f"[conversation] Active response: date={meal_date}, meal={meal_name}, status={status}, rating={existing_rating}")
 
-    # ── 3. If already completed → block, but save extra text ────────
+    # ── 3. If already completed → SILENT IGNORE ───────────────────
     if status == "completed":
-        # Save any extra text as remarks (for positive ratings, remarks are optional extras)
+        # Save any extra text as remarks (silent save, no reply)
         if existing_rating != "not_ok" and active.get("remarks") is None and input_text not in RATING_IDS:
             print(f"[conversation] Saving extra comment from {user_name}: '{input_text}'")
             db.update_response(user_id, meal_date, remarks=input_text)
-        print(f"[conversation] User {user_name} already completed for {meal_date}. Blocking.")
-        wa.send_text(user_phone, "You have already submitted your feedback. Thank you!")
-        return
+        print(f"[conversation] User {user_name} already completed for {meal_date}. SILENT IGNORE.")
+        return  # No reply after first "Thank you"
 
     # ── 4. If rated not_ok → waiting for remarks ────────────────────
     if status == "rated" and existing_rating == "not_ok":
         if input_text in RATING_IDS:
-            # User tapped another button instead of typing — BLOCK, don't re-prompt
-            print(f"[conversation] User {user_name} already rated Not Acceptable. Blocking duplicate rating tap.")
-            wa.send_text(user_phone, "You have already submitted your feedback. Thank you!")
-            return
+            # User tapped another button instead of typing — SILENT IGNORE
+            print(f"[conversation] User {user_name} already rated Not Acceptable. SILENT IGNORE duplicate tap.")
+            return  # No reply
         # Save remarks and complete
         print(f"[conversation] Saving remarks for {user_name}: '{input_text}'")
         db.update_response(user_id, meal_date,
