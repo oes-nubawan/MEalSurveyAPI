@@ -82,10 +82,18 @@
 </head>
 <body>
   <div class="container">
-    <!-- Header -->
+    <!-- Header + Global Date -->
     <div class="card">
-      <h1>Meal Survey</h1>
-      <p class="subtitle">Send meal satisfaction surveys via WhatsApp. One response per user per day. Powered by Supabase.</p>
+      <div class="row" style="align-items:flex-end;">
+        <div style="flex:1;">
+          <h1 style="margin-bottom:2px;">Meal Survey</h1>
+          <p class="subtitle" style="margin-bottom:0;">Send meal satisfaction surveys via WhatsApp. One response per user per day.</p>
+        </div>
+        <div class="field" style="flex:0 0 200px;margin-bottom:0;">
+          <label for="globalDate">Date</label>
+          <input id="globalDate" type="date" style="font-size:1rem;font-weight:600;" />
+        </div>
+      </div>
     </div>
 
     <!-- Send Survey -->
@@ -96,16 +104,8 @@
         <div class="field">
           <label for="mealName">Meal Name</label>
           <input id="mealName" type="text" placeholder="Auto-fetched from meal table or type manually" />
-          <div class="hint">Leave empty to auto-fetch from the meal registered for the selected date.</div>
+          <div class="hint">Auto-filled from the meal registered for the selected date above.</div>
         </div>
-        <div class="field">
-          <label for="surveyDate">Survey Date</label>
-          <input id="surveyDate" type="date" />
-          <div class="hint">Defaults to today (UTC).</div>
-        </div>
-      </div>
-
-      <div class="row">
         <div class="field">
           <label for="surveyType">Survey Type</label>
           <select id="surveyType">
@@ -116,7 +116,7 @@
         </div>
         <div class="field" style="display:flex;align-items:flex-end;gap:12px;">
           <div>
-            <span class="avail-count" id="availCount">0 availed users</span>
+            <span class="avail-count" id="availCount">0 availed</span>
           </div>
           <button id="sendButton" class="btn-primary" style="flex:1;">Send Survey</button>
         </div>
@@ -163,11 +163,6 @@
       <div id="tab-users" class="tab-content">
         <div class="row" style="margin-bottom:16px;align-items:flex-end;">
           <div class="field" style="flex:1;margin-bottom:0;">
-            <label>Avail Date</label>
-            <input id="availDate" type="date" />
-            <div class="hint">Select date to manage per-day meal availability.</div>
-          </div>
-          <div class="field" style="flex:1;margin-bottom:0;">
             <label>Name</label>
             <input id="newUserName" type="text" placeholder="Zayan" />
           </div>
@@ -187,7 +182,7 @@
         <div style="overflow-x:auto;">
           <table>
             <thead>
-              <tr><th>Name</th><th>Phone</th><th>Availed (for date)</th><th>Actions</th></tr>
+              <tr><th>Name</th><th>Phone</th><th>Availed</th><th>Actions</th></tr>
             </thead>
             <tbody id="usersBody"></tbody>
           </table>
@@ -219,48 +214,69 @@
   </div>
 
   <script>
-    // ── Set default date ──────────────────────────────────────────────
+    // ── Global date ──────────────────────────────────────────────────
     var today = new Date();
     var todayStr = today.getUTCFullYear() + '-' +
       String(today.getUTCMonth() + 1).padStart(2, '0') + '-' +
       String(today.getUTCDate()).padStart(2, '0');
-    document.getElementById('surveyDate').value = todayStr;
-    document.getElementById('availDate').value = todayStr;
+    document.getElementById('globalDate').value = todayStr;
 
-    // ── Load availed user count for survey date ──────────────────────
-    async function loadAvailCount() {
-      var date = document.getElementById('surveyDate').value;
-      if (!date) return;
-      try {
-        var r = await fetch('/api/mealavail/' + date);
-        if (!r.ok) return;
-        var entries = await r.json();
-        var availed = (entries || []).filter(function(e) { return e.availstatus; }).length;
-        document.getElementById('availCount').textContent = availed + ' availed user' + (availed !== 1 ? 's' : '');
-      } catch(e) { console.error(e); }
+    // Helper: get the current global date
+    function getDate() {
+      return document.getElementById('globalDate').value || todayStr;
     }
-    loadAvailCount();
 
-    // ── Auto-fetch meal name when date changes ──────────────────────
-    document.getElementById('surveyDate').addEventListener('change', function() {
-      loadAvailCount();
-      autoFetchMealName();
+    // ── When global date changes → refresh everything ──────────────
+    document.getElementById('globalDate').addEventListener('change', function() {
+      onDateChange();
     });
 
+    async function onDateChange() {
+      await autoFetchMealName();
+      loadAvailCount();
+      // Refresh the active tab
+      var activeTab = document.querySelector('.tab.active');
+      if (activeTab) {
+        if (activeTab.dataset.tab === 'users') loadUsers();
+        if (activeTab.dataset.tab === 'responses') loadResponses();
+      }
+    }
+
+    // ── Auto-fetch meal name for selected date ──────────────────────
     async function autoFetchMealName() {
-      var date = document.getElementById('surveyDate').value;
+      var date = getDate();
       var nameInput = document.getElementById('mealName');
       if (!date) return;
       try {
         var r = await fetch('/api/meal/' + date);
         if (!r.ok) return;
         var data = await r.json();
-        if (data.meal_name && !nameInput.value.trim()) {
+        // Always update — if meal exists for this date, fill it in
+        if (data.meal_name) {
           nameInput.value = data.meal_name;
+        } else {
+          nameInput.value = '';
+          nameInput.placeholder = 'No meal registered for this date — type to add';
         }
       } catch(e) { console.error(e); }
     }
+
+    // ── Load availed user count ─────────────────────────────────────
+    async function loadAvailCount() {
+      var date = getDate();
+      if (!date) return;
+      try {
+        var r = await fetch('/api/mealavail/' + date);
+        if (!r.ok) return;
+        var entries = await r.json();
+        var availed = (entries || []).filter(function(e) { return e.availstatus; }).length;
+        document.getElementById('availCount').textContent = availed + ' availed';
+      } catch(e) { console.error(e); }
+    }
+
+    // ── Initial load ────────────────────────────────────────────────
     autoFetchMealName();
+    loadAvailCount();
 
     // ── Tabs ────────────────────────────────────────────────────────
     document.querySelectorAll('.tab').forEach(function(tab) {
@@ -271,16 +287,17 @@
         document.getElementById('tab-' + this.dataset.tab).classList.add('active');
         if (this.dataset.tab === 'users') loadUsers();
         if (this.dataset.tab === 'surveys') loadSurveys();
+        if (this.dataset.tab === 'responses') loadResponses();
       });
     });
 
     // ── Send Survey ─────────────────────────────────────────────────
     document.getElementById('sendButton').addEventListener('click', async function() {
       var mealName = document.getElementById('mealName').value.trim();
-      var surveyDate = document.getElementById('surveyDate').value;
+      var surveyDate = getDate();
       var surveyType = document.getElementById('surveyType').value;
 
-      if (!surveyDate) { showStatus('err', 'Select a survey date.'); return; }
+      if (!surveyDate) { showStatus('err', 'Select a date.'); return; }
 
       var btn = this;
       btn.disabled = true;
@@ -337,16 +354,26 @@
       } catch (err) { console.error(err); }
     });
 
-    // ── Load Responses ──────────────────────────────────────────────
+    // ── Load Responses (filtered by global date) ───────────────────
     async function loadResponses() {
       try {
         var response = await fetch('/api/ui/recent');
         if (!response.ok) return;
         var data = await response.json();
         if (data.error) { document.getElementById('responsesBody').innerHTML = '<tr><td colspan="9" style="color:#dc2626;">' + esc(data.error) + '</td></tr>'; return; }
-        document.getElementById('feedbackCount').textContent = data.length + ' entries';
 
-        if (data.length === 0) {
+        // Filter by global date
+        var selectedDate = getDate();
+        var filtered = data;
+        if (selectedDate) {
+          filtered = data.filter(function(item) {
+            return item.surveyDate === selectedDate;
+          });
+        }
+
+        document.getElementById('feedbackCount').textContent = filtered.length + ' entries' + (selectedDate ? ' for ' + selectedDate : '');
+
+        if (filtered.length === 0) {
           document.getElementById('responsesBody').innerHTML = '';
           document.getElementById('emptyState').style.display = 'block';
           return;
@@ -354,8 +381,8 @@
 
         document.getElementById('emptyState').style.display = 'none';
         var html = '';
-        for (var i = 0; i < data.length; i++) {
-          var item = data[i];
+        for (var i = 0; i < filtered.length; i++) {
+          var item = filtered[i];
           var rating = item.rating || '';
           var statusBadge = '<span class="badge badge-' + (item.responseStatus || 'pending') + '">' + fmtStatus(item.responseStatus) + '</span>';
           html += '<tr>' +
@@ -374,17 +401,17 @@
       } catch (err) { console.error(err); }
     }
 
-    // ── Load Users (with per-date meal avail) ──────────────────────
-    var _mealavailMap = {};  // user_id -> availstatus for selected date
+    // ── Load Users (with per-date meal avail from global date) ─────
+    var _mealavailMap = {};
 
     async function loadUsers() {
       try {
-        var availDate = document.getElementById('availDate').value || todayStr;
+        var date = getDate();
 
         // Fetch all users and mealavail for the date in parallel
         var [usersRes, availRes] = await Promise.all([
           fetch('/api/users'),
-          fetch('/api/mealavail/' + availDate)
+          fetch('/api/mealavail/' + date)
         ]);
         if (!usersRes.ok) return;
         var users = await usersRes.json();
@@ -397,7 +424,7 @@
         (availEntries || []).forEach(function(e) { _mealavailMap[e.user_id] = e.availstatus; });
 
         var availedCount = Object.values(_mealavailMap).filter(Boolean).length;
-        document.getElementById('availDateCount').textContent = availedCount + ' of ' + users.length + ' availed';
+        document.getElementById('availDateCount').textContent = availedCount + ' of ' + users.length + ' availed for ' + date;
 
         if (users.length === 0) {
           document.getElementById('usersBody').innerHTML = '';
@@ -423,7 +450,6 @@
           el.addEventListener('change', async function() {
             var userId = this.dataset.userid;
             var status = this.checked;
-            var date = document.getElementById('availDate').value || todayStr;
             try {
               await fetch('/api/mealavail', {
                 method: 'POST',
@@ -431,9 +457,8 @@
                 body: JSON.stringify({ mealDate: date, userId: userId, availstatus: status })
               });
               _mealavailMap[userId] = status;
-              // Update count
               var cnt = Object.values(_mealavailMap).filter(Boolean).length;
-              document.getElementById('availDateCount').textContent = cnt + ' of ' + users.length + ' availed';
+              document.getElementById('availDateCount').textContent = cnt + ' of ' + users.length + ' availed for ' + date;
               loadAvailCount();
             } catch(e) { console.error(e); }
           });
@@ -441,14 +466,9 @@
       } catch (err) { console.error(err); }
     }
 
-    // ── Avail date change ──────────────────────────────────────────
-    document.getElementById('availDate').addEventListener('change', function() {
-      loadUsers();
-    });
-
     // ── Select All / Deselect All ───────────────────────────────────
     document.getElementById('selectAllAvail').addEventListener('click', async function() {
-      var date = document.getElementById('availDate').value || todayStr;
+      var date = getDate();
       var toggles = document.querySelectorAll('.avail-toggle');
       var userIds = [];
       toggles.forEach(function(el) { userIds.push(el.dataset.userid); el.checked = true; });
@@ -465,7 +485,7 @@
     });
 
     document.getElementById('deselectAllAvail').addEventListener('click', async function() {
-      var date = document.getElementById('availDate').value || todayStr;
+      var date = getDate();
       var toggles = document.querySelectorAll('.avail-toggle');
       var userIds = [];
       toggles.forEach(function(el) { userIds.push(el.dataset.userid); el.checked = false; });
