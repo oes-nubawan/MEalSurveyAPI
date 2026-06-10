@@ -8,7 +8,8 @@ The response_status field in tbl_usersresponse IS the state machine:
   completed → fully done (positive rating OR not_ok + remarks)
 
 Duplicate prevention: ONE row per user per meal_date (UNIQUE constraint).
-If user already has a completed/rated response, block with "already submitted".
+Once a user gives a rating, they CANNOT change it. Block with "already submitted".
+Any extra text after completing is saved as remarks.
 """
 
 import threading
@@ -48,7 +49,7 @@ RATING_DISPLAY = {
     "not_ok": "Not Acceptable",
 }
 
-# Known rating IDs
+# Known rating IDs — anything matching these is a rating button tap, not free text
 RATING_IDS = frozenset({
     "very_good", "good", "satisfactory", "not_ok",
     "ts_very_good", "ts_good", "ts_satisfactory", "ts_not_ok",
@@ -94,13 +95,16 @@ def _handle_internal(user_phone: str, input_text: str, wa: WhatsAppService):
 
     if not active:
         # No pending/rated response — check if they already completed one
-        # (tapping the survey buttons again after completing)
         latest = db.get_latest_response_by_phone(user_phone)
         if latest and latest.get("response_status") == "completed":
+            # Already completed — save any extra text as remarks if they had none
+            if latest.get("remarks") is None and input_text not in RATING_IDS and latest.get("user_response") != "not_ok":
+                print(f"[conversation] Saving extra comment from {user_name}: '{input_text}'")
+                db.update_response(user_id, latest["meal_date"], remarks=input_text)
             print(f"[conversation] User {user_name} already completed. Blocking.")
             wa.send_text(user_phone, "You have already submitted your feedback. Thank you!")
             return
-        # No survey sent to this user
+        # No survey sent to this user at all
         print(f"[conversation] No active survey for {user_name}")
         wa.send_text(user_phone, "No active survey found. Please wait for a survey to be sent.")
         return
@@ -108,21 +112,26 @@ def _handle_internal(user_phone: str, input_text: str, wa: WhatsAppService):
     meal_date = active["meal_date"]
     meal_name = active["meal_name"]
     status = active.get("response_status", "pending")
+    existing_rating = active.get("user_response")
 
-    print(f"[conversation] Active response: date={meal_date}, meal={meal_name}, status={status}")
+    print(f"[conversation] Active response: date={meal_date}, meal={meal_name}, status={status}, rating={existing_rating}")
 
-    # ── 3. If already completed → block ─────────────────────────────
+    # ── 3. If already completed → block, but save extra text ────────
     if status == "completed":
+        # Save any extra text as remarks (for positive ratings, remarks are optional extras)
+        if existing_rating != "not_ok" and active.get("remarks") is None and input_text not in RATING_IDS:
+            print(f"[conversation] Saving extra comment from {user_name}: '{input_text}'")
+            db.update_response(user_id, meal_date, remarks=input_text)
         print(f"[conversation] User {user_name} already completed for {meal_date}. Blocking.")
         wa.send_text(user_phone, "You have already submitted your feedback. Thank you!")
         return
 
     # ── 4. If rated not_ok → waiting for remarks ────────────────────
-    if status == "rated" and active.get("user_response") == "not_ok":
+    if status == "rated" and existing_rating == "not_ok":
         if input_text in RATING_IDS:
-            # User tapped another rating instead of typing — re-prompt
-            print(f"[conversation] User {user_name} tapped rating instead of typing remarks. Re-prompting.")
-            wa.send_text(user_phone, f"You selected Not Acceptable for {meal_name}. Please type your feedback about what went wrong:")
+            # User tapped another button instead of typing — BLOCK, don't re-prompt
+            print(f"[conversation] User {user_name} already rated Not Acceptable. Blocking duplicate rating tap.")
+            wa.send_text(user_phone, "You have already submitted your feedback. Thank you!")
             return
         # Save remarks and complete
         print(f"[conversation] Saving remarks for {user_name}: '{input_text}'")
@@ -130,7 +139,7 @@ def _handle_internal(user_phone: str, input_text: str, wa: WhatsAppService):
             remarks=input_text,
             response_status="completed",
         )
-        wa.send_text(user_phone, "Thank you for your detailed feedback!")
+        wa.send_text(user_phone, "Thank you for your feedback!")
         return
 
     # ── 5. If pending → waiting for rating ──────────────────────────
@@ -146,9 +155,8 @@ def _handle_internal(user_phone: str, input_text: str, wa: WhatsAppService):
             _process_rating(user_phone, user_id, meal_date, meal_name, rating, wa)
             return
 
-        # Handle template button ratings
+        # Template buttons
         if input_text in ("add_comment", "skip_comment"):
-            # These shouldn't come at pending state, but handle gracefully
             wa.send_text(user_phone, "Please choose a rating from the options provided.")
             return
 
@@ -164,7 +172,6 @@ def _handle_internal(user_phone: str, input_text: str, wa: WhatsAppService):
 
 def _process_rating(user_phone: str, user_id: str, meal_date: str, meal_name: str, rating: str, wa: WhatsAppService):
     """Process a rating selection."""
-    display = RATING_DISPLAY.get(rating, rating)
     print(f"[conversation] User rated: {rating} for {meal_name} on {meal_date}")
 
     if rating == "not_ok":
@@ -173,7 +180,7 @@ def _process_rating(user_phone: str, user_id: str, meal_date: str, meal_name: st
             user_response="not_ok",
             response_status="rated",
         )
-        wa.send_text(user_phone, f"You selected Not Acceptable for {meal_name}. Please type your feedback about what went wrong:")
+        wa.send_text(user_phone, f"You selected Not Acceptable for {meal_name}. Please type your feedback:")
     else:
         # Positive rating — complete immediately
         db.update_response(user_id, meal_date,
