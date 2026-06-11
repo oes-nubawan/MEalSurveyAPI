@@ -190,15 +190,15 @@ def send_survey():
         meal_name = meal_entry.get("meal_name", meal_name)
         print(f"[survey] Meal for {survey_date}: {meal_name}")
     else:
-        return jsonify({"error": f"No meal registered for {survey_date}. This is a holiday — no tokens, no meal, no survey."}), 400
+        return jsonify({"error": f"No meal for {survey_date}. Holiday."}), 400
 
     if not meal_name:
-        return jsonify({"error": "Meal name is required. Ensure a meal is registered for the selected date."}), 400
+        return jsonify({"error": "No meal name for this date."}), 400
 
     # Get users who availed the meal on this date (from tbl_mealavail)
     available_users = db.get_available_users_for_date(survey_date)
     if not available_users:
-        return jsonify({"error": "No users have availed the meal for this date. Mark users as availed in the Users tab."}), 400
+        return jsonify({"error": "No availed users for this date."}), 400
 
     # Create meal entry (idempotent)
     try:
@@ -214,17 +214,20 @@ def send_survey():
         user_id = user["id"]
         user_name = user.get("name", "")
 
-        # Create pending response (skips if already exists)
-        response = db.create_response(user_id, survey_date, meal_name)
-        if not response:
+        # Skip if user already has a response for this date
+        if db.has_response(user_id, survey_date):
             results.append({"phone": phone, "name": user_name, "status": "skipped", "reason": "already has response"})
             continue
 
+        # SEND FIRST — only write to DB if WhatsApp accepts the message
         try:
             print(f"[survey] Sending {survey_type} survey to {user_name} ({phone}) for {meal_name} (date: {survey_date})")
             wa.send_survey(phone, meal_name, survey_type)
+            # WhatsApp accepted → now safe to create pending response in DB
+            db.create_response(user_id, survey_date, meal_name)
             results.append({"phone": phone, "name": user_name, "status": "sent"})
         except Exception as e:
+            # WhatsApp rejected — do NOT create DB entry so retry works
             print(f"[survey] Failed to send to {phone}: {e}")
             errors.append({"phone": phone, "name": user_name, "error": str(e)})
 
@@ -313,15 +316,19 @@ def cron_daily_survey():
         user_id = user["id"]
         user_name = user.get("name", "")
 
-        response = db.create_response(user_id, today_pkt, meal_name)
-        if not response:
+        # Skip if user already has a response for this date
+        if db.has_response(user_id, today_pkt):
             skip_count += 1
             continue
 
+        # SEND FIRST — only write to DB if WhatsApp accepts
         try:
             wa.send_survey(phone, meal_name, "button")
+            # WhatsApp accepted → safe to create pending response
+            db.create_response(user_id, today_pkt, meal_name)
             sent_count += 1
         except Exception as e:
+            # WhatsApp rejected — no DB entry, so retry will work
             print(f"[cron] Failed to send to {phone}: {e}")
             error_count += 1
 
@@ -524,6 +531,20 @@ def reset_user(phone):
     print(f"[ui] Resetting user {phone}")
     db.reset_user(phone)
     return jsonify({"status": "reset", "phone": phone})
+
+
+@app.route("/api/ui/cleanup-orphaned", methods=["POST"])
+def cleanup_orphaned():
+    """Delete pending responses that were never actually delivered.
+    
+    This cleans up the old bug where DB entries were created before
+    WhatsApp send — if the send failed, orphaned 'pending' rows remained.
+    """
+    try:
+        cleaned = db.cleanup_orphaned_pending()
+        return jsonify({"status": "cleaned", "deleted": cleaned})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/ui/debug/webhooks")

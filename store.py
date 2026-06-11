@@ -294,6 +294,27 @@ class SupabaseStore:
                 return None
             raise
 
+    def has_response(self, user_id: str, meal_date: str) -> bool:
+        """Check if a response already exists for this user+date. No creation."""
+        existing = self._get("tbl_usersresponse", {
+            "user_id": f"eq.{user_id}",
+            "meal_date": f"eq.{meal_date}",
+            "select": "id",
+        })
+        return len(existing) > 0
+
+    def delete_response(self, user_id: str, meal_date: str) -> bool:
+        """Delete a response row — used to clean up after a failed WhatsApp send."""
+        try:
+            self._delete("tbl_usersresponse", {
+                "user_id": f"eq.{user_id}",
+                "meal_date": f"eq.{meal_date}",
+            })
+            return True
+        except Exception as e:
+            print(f"[store] Error deleting response for user {user_id}: {e}")
+            return False
+
     def get_active_response(self, user_id: str) -> Optional[dict]:
         """Get the active (pending or rated) response for a user. Most recent first."""
         results = self._get("tbl_usersresponse", {
@@ -537,6 +558,33 @@ class SupabaseStore:
     def reset_user(self, phone: str):
         """Compatibility: reset all responses for a user."""
         self.reset_user_responses(phone)
+
+    def cleanup_orphaned_pending(self) -> int:
+        """Delete pending responses older than 2 hours — they were likely never delivered.
+        
+        A pending response that's been sitting for 2+ hours without any user
+        interaction means the WhatsApp message was probably never sent (old bug)
+        or the user ignored it. Deleting these allows re-sending.
+        """
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        # Find old pending responses
+        old_pending = self._get("tbl_usersresponse", {
+            "response_status": "eq.pending",
+            "created_at": f"lt.{cutoff}",
+            "select": "id,user_id,meal_date",
+        })
+        if not old_pending:
+            return 0
+        count = 0
+        for entry in old_pending:
+            try:
+                self._delete("tbl_usersresponse", {"id": f"eq.{entry['id']}"})
+                count += 1
+                print(f"[store] Cleaned orphaned pending: user={entry['user_id']}, date={entry['meal_date']}")
+            except Exception as e:
+                print(f"[store] Error cleaning orphan: {e}")
+        return count
 
     # No-op methods (state is in DB now)
     def get_state(self, phone: str) -> Optional[dict]:

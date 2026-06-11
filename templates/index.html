@@ -104,7 +104,7 @@
         <div class="field">
           <label for="mealName">Meal Name</label>
           <input id="mealName" type="text" placeholder="Fetching..." readonly style="background:#f8fafc;cursor:default;" />
-          <div class="hint" id="mealHint">Auto-filled from the meal registered for the selected date.</div>
+          <div class="hint" id="mealHint">Auto-filled from the meal for the selected date.</div>
         </div>
         <div class="field">
           <label for="surveyType">Survey Type</label>
@@ -194,7 +194,7 @@
         </div>
 
         <div id="holidayNotice" style="display:none;margin-bottom:12px;padding:10px 14px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;font-size:0.85rem;">
-          <strong>Holiday</strong> — No meal registered for this date. No tokens, no meal, no survey requests.
+          No meal for this date.
         </div>
 
         <div style="overflow-x:auto;">
@@ -286,7 +286,7 @@
           _isHoliday = false;
           nameInput.value = data.meal_name;
           nameInput.placeholder = '';
-          hintEl.textContent = 'Auto-filled from the meal registered for this date.';
+          hintEl.textContent = 'Auto-filled from the meal for this date.';
           hintEl.style.color = '';
           sendBtn.disabled = false;
           sendBtn.textContent = 'Send Survey';
@@ -295,10 +295,10 @@
           _isHoliday = true;
           nameInput.value = '';
           nameInput.placeholder = '— Holiday —';
-          hintEl.textContent = 'No meal registered for this date = Holiday. No survey can be sent.';
+          hintEl.textContent = 'No meal for this date.';
           hintEl.style.color = '#dc2626';
           sendBtn.disabled = true;
-          sendBtn.textContent = 'Holiday — No Survey';
+          sendBtn.textContent = 'No Survey';
         }
       } catch(e) {
         console.error(e);
@@ -386,7 +386,7 @@
         // Only re-enable if not a holiday
         if (_isHoliday) {
           btn.disabled = true;
-          btn.textContent = 'Holiday — No Survey';
+          btn.textContent = 'No Survey';
         } else {
           btn.disabled = false;
           btn.textContent = 'Send Survey';
